@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -9,8 +10,9 @@ import (
 )
 
 func main() {
-	memoryStore := store.NewMemoryStore()
-	roomHandler := room.NewHandler(memoryStore)
+	ctx := context.Background()
+	appStore := createStore(ctx)
+	roomHandler := room.NewHandler(appStore)
 
 	mux := http.NewServeMux()
 	mux.Handle("/rooms", roomHandler)
@@ -28,7 +30,7 @@ func main() {
 	}
 }
 
-func createStore() store.Store {
+func createStore(ctx context.Context) store.Store {
 	databaseURL := os.Getenv("DATABASE_URL")
 
 	if databaseURL == "" {
@@ -36,7 +38,7 @@ func createStore() store.Store {
 		return store.NewMemoryStore()
 	}
 
-	postgresStore, err := store.NewPostgresStore(nil, databaseURL)
+	postgresStore, err := store.NewPostgresStore(ctx, databaseURL)
 	if err != nil {
 		log.Fatal("failed to connect to postgres:", err)
 	}
