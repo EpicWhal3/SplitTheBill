@@ -1,8 +1,6 @@
 package store
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"splitcheck/backend/internal/domain"
 	"sync"
@@ -73,6 +71,7 @@ func (s *MemoryStore) AddParticipant(roomID string, participant domain.Participa
 
 	participant.ID = newID()
 	participant.RoomID = roomID
+
 	s.participants[roomID] = append(s.participants[roomID], participant)
 	return participant, nil
 }
@@ -85,9 +84,7 @@ func (s *MemoryStore) ListParticipants(roomID string) ([]domain.Participant, err
 		return nil, ErrorNotFound
 	}
 
-	result := append([]domain.Participant(nil), s.participants[roomID]...)
-
-	return result, nil
+	return append([]domain.Participant(nil), s.participants[roomID]...), nil
 }
 
 func (s *MemoryStore) AddItem(roomID string, item domain.ReceiptItem) (domain.ReceiptItem, error) {
@@ -114,9 +111,7 @@ func (s *MemoryStore) ListItems(roomID string) ([]domain.ReceiptItem, error) {
 		return nil, ErrorNotFound
 	}
 
-	result := append([]domain.ReceiptItem(nil), s.items[roomID]...)
-
-	return result, nil
+	return append([]domain.ReceiptItem(nil), s.items[roomID]...), nil
 }
 
 func (s *MemoryStore) AddAssignment(roomID string, assignment domain.ItemAssignment) (domain.ItemAssignment, error) {
@@ -161,9 +156,7 @@ func (s *MemoryStore) ListAssignments(roomID string) ([]domain.ItemAssignment, e
 		return nil, ErrorNotFound
 	}
 
-	result := append([]domain.ItemAssignment(nil), s.assignments[roomID]...)
-
-	return result, nil
+	return append([]domain.ItemAssignment(nil), s.assignments[roomID]...), nil
 }
 
 func (s *MemoryStore) itemExists(roomID string, itemID string) bool {
@@ -184,15 +177,4 @@ func (s *MemoryStore) participantExists(roomID string, participantID string) boo
 	}
 
 	return false
-}
-
-func newID() string {
-	bytes := make([]byte, 8)
-
-	_, err := rand.Read(bytes)
-	if err != nil {
-		panic(err)
-	}
-
-	return hex.EncodeToString(bytes)
 }
