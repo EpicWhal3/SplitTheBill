@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"splitcheck/backend/internal/calculation"
-	"splitcheck/backend/internal/domain"
-	"splitcheck/backend/internal/store"
+	"splitthebill/backend/internal/calculation"
+	"splitthebill/backend/internal/domain"
+	"splitthebill/backend/internal/store"
 )
 
 type Handler struct {
@@ -227,6 +227,18 @@ func (h *Handler) getRoom(w http.ResponseWriter, roomID string) {
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+
+	if participants == nil {
+		participants = []domain.Participant{}
+	}
+
+	if items == nil {
+		items = []domain.ReceiptItem{}
+	}
+
+	if assignments == nil {
+		assignments = []domain.ItemAssignment{}
 	}
 
 	response := map[string]any{

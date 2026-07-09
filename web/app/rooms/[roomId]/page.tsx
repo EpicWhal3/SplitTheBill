@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+"use client";
+
+import { useEffect, useMemo, useState, type SubmitEvent } from "react";
 import {
   addAssignment,
   addItem,
@@ -67,9 +69,9 @@ export default function RoomPage({ params }: Props) {
       const data = await getRoom(id);
 
       setRoom(data.room);
-      setParticipants(data.participants);
-      setItems(data.items);
-      setAssignments(data.assignments);
+		setParticipants(data.participants ?? []);
+		setItems(data.items ?? []);
+		setAssignments(data.assignments ?? []);
 
       setServiceFee(String(data.room.service_fee / 100));
       setTipAmount(String(data.room.tip_amount / 100));
@@ -87,7 +89,7 @@ export default function RoomPage({ params }: Props) {
     }
   }
 
-  async function handleUpdateCharges(event: React.FormEvent<HTMLFormElement>) {
+  async function handleUpdateCharges(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!roomId) return;
@@ -111,7 +113,7 @@ export default function RoomPage({ params }: Props) {
     }
   }
 
-  async function handleAddParticipant(event: React.FormEvent<HTMLFormElement>) {
+  async function handleAddParticipant(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!roomId || !participantName.trim()) return;
@@ -136,7 +138,7 @@ export default function RoomPage({ params }: Props) {
     }
   }
 
-  async function handleAddItem(event: React.FormEvent<HTMLFormElement>) {
+  async function handleAddItem(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!roomId || !itemName.trim()) return;
@@ -179,7 +181,7 @@ export default function RoomPage({ params }: Props) {
     }
   }
 
-  async function handleAddAssignment(event: React.FormEvent<HTMLFormElement>) {
+  async function handleAddAssignment(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!roomId || !selectedItemId || !selectedParticipantId) return;

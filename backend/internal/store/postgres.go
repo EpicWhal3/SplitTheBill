@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"errors"
-	"splitcheck/backend/internal/domain"
+	"splitthebill/backend/internal/domain"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -186,7 +186,7 @@ func (s *PostgresStore) ListParticipants(roomID string) ([]domain.Participant, e
 	}
 	defer rows.Close()
 
-	var participants []domain.Participant
+	participants := make([]domain.Participant, 0)
 
 	for rows.Next() {
 		var participant domain.Participant
@@ -275,7 +275,7 @@ func (s *PostgresStore) ListItems(roomID string) ([]domain.ReceiptItem, error) {
 	}
 	defer rows.Close()
 
-	var items []domain.ReceiptItem
+	items := make([]domain.ReceiptItem, 0)
 
 	for rows.Next() {
 		var item domain.ReceiptItem
@@ -368,7 +368,7 @@ func (s *PostgresStore) ListAssignments(roomID string) ([]domain.ItemAssignment,
 	}
 	defer rows.Close()
 
-	var assignments []domain.ItemAssignment
+	assignments := make([]domain.ItemAssignment, 0)
 
 	for rows.Next() {
 		var assignment domain.ItemAssignment

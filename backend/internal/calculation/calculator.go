@@ -3,7 +3,7 @@ package calculation
 import (
 	"errors"
 	"sort"
-	"splitcheck/backend/internal/domain"
+	"splitthebill/backend/internal/domain"
 )
 
 type BillInput struct {

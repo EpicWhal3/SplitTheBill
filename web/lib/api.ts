@@ -76,9 +76,6 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export function createRoom(payload: {
   title: string;
   currency: string;
-  service_fee: number;
-  tip_amount: number;
-  discount: number;
 }) {
   return request<Room>("/rooms", {
     method: "POST",
@@ -108,7 +105,7 @@ export function updateRoom(
 }
 
 export function addParticipant(roomId: string, payload: { name: string }) {
-  return request<Participant>(`/rooms/${roomId}/paricipants`, {
+  return request<Participant>(`/rooms/${roomId}/participants`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

@@ -3,7 +3,7 @@ package calculation
 import (
 	"testing"
 
-	"splitcheck/backend/internal/domain"
+	"splitthebill/backend/internal/domain"
 )
 
 func TestCalculateSimpleBill(t *testing.T) {

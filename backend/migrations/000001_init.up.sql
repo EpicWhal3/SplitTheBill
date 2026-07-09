@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS participants (
     id text primary key,
     room_id text NOT NULL references rooms (id) ON DELETE CASCADE,
     name text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now (),
+    created_at timestamptz NOT NULL DEFAULT now ()
 );
 
 CREATE TABLE IF NOT EXISTS receipt_items (
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS receipt_items (
     quantity integer NOT NULL DEFAULT 1,
     unit_price bigint not null default 0,
     total bigint not null,
-    created_at timestamptz NOT NULL DEFAULT now (),
+    created_at timestamptz NOT NULL DEFAULT now ()
 );
 
 CREATE TABLE IF NOT EXISTS item_assignments (

@@ -1,6 +1,6 @@
 package store
 
-import "splitcheck/backend/internal/domain"
+import "splitthebill/backend/internal/domain"
 
 type Store interface {
 	CreateRoom(room domain.Room) (domain.Room, error)

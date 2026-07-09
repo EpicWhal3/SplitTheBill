@@ -1,43 +1,43 @@
 package domain
 
 type Room struct {
-	ID          string
-	Title       string
-	Currency    string
-	Subtotal    int64
-	ServiceFee  int64
-	TipAmount   int64
-	Discount    int64
-	TotalAmount int64
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Currency    string `json:"currency"`
+	Subtotal    int64  `json:"subtotal"`
+	ServiceFee  int64  `json:"service_fee"`
+	TipAmount   int64  `json:"tip_amount"`
+	Discount    int64  `json:"discount"`
+	TotalAmount int64  `json:"total_amount"`
 }
 
 type Participant struct {
-	ID     string
-	RoomID string
-	Name   string
+	ID     string `json:"id"`
+	RoomID string `json:"room_id"`
+	Name   string `json:"name"`
 }
 
 type ReceiptItem struct {
-	ID        string
-	RoomID    string
-	Name      string
-	Quantity  int
-	UnitPrice int64
-	Total     int64
+	ID        string `json:"id"`
+	RoomID    string `json:"room_id"`
+	Name      string `json:"name"`
+	Quantity  int    `json:"quantity"`
+	UnitPrice int64  `json:"unit_price"`
+	Total     int64  `json:"total"`
 }
 
 type ItemAssignment struct {
-	ItemID        string
-	ParticipantID string
-	Weight        int64
+	ItemID        string `json:"item_id"`
+	ParticipantID string `json:"participant_id"`
+	Weight        int64  `json:"weight"`
 }
 
 type ParticipantResult struct {
-	ParticipantID string
-	Name          string
-	BaseAmount    int64
-	ServiceShare  int64
-	TipShare      int64
-	DiscountShare int64
-	TotalAmount   int64
+	ParticipantID string `json:"participant_id"`
+	Name          string `json:"name"`
+	BaseAmount    int64  `json:"base_amount"`
+	ServiceShare  int64  `json:"service_share"`
+	TipShare      int64  `json:"tip_share"`
+	DiscountShare int64  `json:"discount_share"`
+	TotalAmount   int64  `json:"total_amount"`
 }

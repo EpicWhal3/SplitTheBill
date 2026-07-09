@@ -2,7 +2,7 @@ package store
 
 import (
 	"errors"
-	"splitcheck/backend/internal/domain"
+	"splitthebill/backend/internal/domain"
 	"sync"
 )
 

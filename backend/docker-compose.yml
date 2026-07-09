@@ -1,15 +1,15 @@
 services:
   postgres:
-    image: postgres:18-alpine3.24
+    image: postgres:17-alpine
     container_name: postgres
     environment:
-      POSTGRES_DB: splitcheck
-      POSTGRES_USER: splitcheck
-      POSTGRES_PASSWORD: splitcheck
+      POSTGRES_DB: splitthebill
+      POSTGRES_USER: splitthebill
+      POSTGRES_PASSWORD: splitthebill
     ports:
       - "5432:5432"
     volumes:
-      - splitcheck_pg_data:/var/lib/postgresql/data
+      - splitthebill_pg_data:/var/lib/postgresql/data
 
 volumes:
-  splitcheck_pg_data:
+  splitthebill_pg_data:
