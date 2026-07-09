@@ -90,6 +90,23 @@ export function getRoom(roomId: string) {
   return request<RoomDetails>(`/rooms/${roomId}`);
 }
 
+export function updateRoom(
+  roomId: string,
+  payload: Partial<{
+    title: string;
+    currency: string;
+    service_fee: number;
+    tip_amount: number;
+    discount: number;
+    total_amount: number;
+  }>,
+) {
+  return request<Room>(`/rooms/${roomId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function addParticipant(roomId: string, payload: { name: string }) {
   return request<Participant>(`/rooms/${roomId}/paricipants`, {
     method: "POST",
