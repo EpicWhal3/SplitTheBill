@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+
 	"splitthebill/backend/internal/domain"
 
 	"github.com/jackc/pgx/v5"
@@ -13,7 +14,10 @@ type PostgresStore struct {
 	db *pgxpool.Pool
 }
 
-func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
+func NewPostgresStore(
+	ctx context.Context,
+	databaseURL string,
+) (*PostgresStore, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, err
@@ -24,29 +28,31 @@ func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, 
 		return nil, err
 	}
 
-	return &PostgresStore{
-		db: pool,
-	}, nil
+	return &PostgresStore{db: pool}, nil
 }
 
 func (s *PostgresStore) Close() {
 	s.db.Close()
 }
 
-func (s *PostgresStore) CreateRoom(room domain.Room) (domain.Room, error) {
+func (s *PostgresStore) CreateRoom(
+	room domain.Room,
+) (domain.Room, error) {
 	ctx := context.Background()
 	room.ID = newID()
 
 	query := `
-	INSERT INTO rooms (
-	id, 
-	title,
-	currency,
-	service_fee,
-	tip_amount,
-	discount,
-	total_amount
-	) VALUES ($1, $2, $3, $4, $5, $6, $7)`
+		INSERT INTO rooms (
+			id,
+			title,
+			currency,
+			service_fee,
+			tip_amount,
+			discount,
+			expected_total
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
 
 	_, err := s.db.Exec(
 		ctx,
@@ -57,7 +63,7 @@ func (s *PostgresStore) CreateRoom(room domain.Room) (domain.Room, error) {
 		room.ServiceFee,
 		room.TipAmount,
 		room.Discount,
-		room.TotalAmount,
+		room.ExpectedTotal,
 	)
 	if err != nil {
 		return domain.Room{}, err
@@ -66,23 +72,38 @@ func (s *PostgresStore) CreateRoom(room domain.Room) (domain.Room, error) {
 	return room, nil
 }
 
-func (s *PostgresStore) GetRoom(roomID string) (domain.Room, error) {
+func (s *PostgresStore) GetRoom(
+	roomID string,
+) (domain.Room, error) {
 	ctx := context.Background()
 
 	query := `
-	SELECT id, title, currency, service_fee, tip_amount, discount, total_amount
-	FROM rooms
-	WHERE id = $1`
+		SELECT
+			id,
+			title,
+			currency,
+			service_fee,
+			tip_amount,
+			discount,
+			expected_total
+		FROM rooms
+		WHERE id = $1
+	`
 
 	var room domain.Room
-	err := s.db.QueryRow(ctx, query, roomID).Scan(
+
+	err := s.db.QueryRow(
+		ctx,
+		query,
+		roomID,
+	).Scan(
 		&room.ID,
 		&room.Title,
 		&room.Currency,
 		&room.ServiceFee,
 		&room.TipAmount,
 		&room.Discount,
-		&room.TotalAmount,
+		&room.ExpectedTotal,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -96,17 +117,22 @@ func (s *PostgresStore) GetRoom(roomID string) (domain.Room, error) {
 	return room, nil
 }
 
-func (s *PostgresStore) UpdateRoom(room domain.Room) (domain.Room, error) {
+func (s *PostgresStore) UpdateRoom(
+	room domain.Room,
+) (domain.Room, error) {
 	ctx := context.Background()
 
-	query := `UPDATE rooms SET
-	title = $2,
-	currency = $3,
-	service_fee = $4,
-	tip_amount = $5,
-	discount = $6,
-	total_amount = $7
-	WHERE id = $1`
+	query := `
+		UPDATE rooms SET
+			title = $2,
+			currency = $3,
+			service_fee = $4,
+			tip_amount = $5,
+			discount = $6,
+			expected_total = $7,
+			updated_at = now()
+		WHERE id = $1
+	`
 
 	commandTag, err := s.db.Exec(
 		ctx,
@@ -117,19 +143,23 @@ func (s *PostgresStore) UpdateRoom(room domain.Room) (domain.Room, error) {
 		room.ServiceFee,
 		room.TipAmount,
 		room.Discount,
-		room.TotalAmount,
+		room.ExpectedTotal,
 	)
-
 	if err != nil {
 		return domain.Room{}, err
 	}
+
 	if commandTag.RowsAffected() == 0 {
 		return domain.Room{}, ErrorNotFound
 	}
+
 	return room, nil
 }
 
-func (s *PostgresStore) AddParticipant(roomID string, participant domain.Participant) (domain.Participant, error) {
+func (s *PostgresStore) AddParticipant(
+	roomID string,
+	participant domain.Participant,
+) (domain.Participant, error) {
 	ctx := context.Background()
 
 	if err := s.ensureRoomExists(ctx, roomID); err != nil {
@@ -155,7 +185,6 @@ func (s *PostgresStore) AddParticipant(roomID string, participant domain.Partici
 		participant.RoomID,
 		participant.Name,
 	)
-
 	if err != nil {
 		return domain.Participant{}, err
 	}
@@ -163,24 +192,28 @@ func (s *PostgresStore) AddParticipant(roomID string, participant domain.Partici
 	return participant, nil
 }
 
-func (s *PostgresStore) ListParticipants(roomID string) ([]domain.Participant, error) {
+func (s *PostgresStore) ListParticipants(
+	roomID string,
+) ([]domain.Participant, error) {
 	ctx := context.Background()
 
 	if err := s.ensureRoomExists(ctx, roomID); err != nil {
 		return nil, err
 	}
 
-	query := `
-		SELECT
-			id,
-			room_id,
-			name
-		FROM participants
-		WHERE room_id = $1
-		ORDER BY created_at ASC
-	`
-
-	rows, err := s.db.Query(ctx, query, roomID)
+	rows, err := s.db.Query(
+		ctx,
+		`
+			SELECT
+				id,
+				room_id,
+				name
+			FROM participants
+			WHERE room_id = $1
+			ORDER BY created_at ASC
+		`,
+		roomID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +232,10 @@ func (s *PostgresStore) ListParticipants(roomID string) ([]domain.Participant, e
 			return nil, err
 		}
 
-		participants = append(participants, participant)
+		participants = append(
+			participants,
+			participant,
+		)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -209,7 +245,74 @@ func (s *PostgresStore) ListParticipants(roomID string) ([]domain.Participant, e
 	return participants, nil
 }
 
-func (s *PostgresStore) AddItem(roomID string, item domain.ReceiptItem) (domain.ReceiptItem, error) {
+func (s *PostgresStore) UpdateParticipant(
+	roomID string,
+	participant domain.Participant,
+) (domain.Participant, error) {
+	ctx := context.Background()
+
+	if err := s.ensureRoomExists(ctx, roomID); err != nil {
+		return domain.Participant{}, err
+	}
+
+	participant.RoomID = roomID
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`
+			UPDATE participants
+			SET name = $3
+			WHERE room_id = $1 AND id = $2
+		`,
+		roomID,
+		participant.ID,
+		participant.Name,
+	)
+	if err != nil {
+		return domain.Participant{}, err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return domain.Participant{}, ErrorParticipantNotFound
+	}
+
+	return participant, nil
+}
+
+func (s *PostgresStore) DeleteParticipant(
+	roomID string,
+	participantID string,
+) error {
+	ctx := context.Background()
+
+	if err := s.ensureRoomExists(ctx, roomID); err != nil {
+		return err
+	}
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`
+			DELETE FROM participants
+			WHERE room_id = $1 AND id = $2
+		`,
+		roomID,
+		participantID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return ErrorParticipantNotFound
+	}
+
+	return nil
+}
+
+func (s *PostgresStore) AddItem(
+	roomID string,
+	item domain.ReceiptItem,
+) (domain.ReceiptItem, error) {
 	ctx := context.Background()
 
 	if err := s.ensureRoomExists(ctx, roomID); err != nil {
@@ -241,7 +344,6 @@ func (s *PostgresStore) AddItem(roomID string, item domain.ReceiptItem) (domain.
 		item.UnitPrice,
 		item.Total,
 	)
-
 	if err != nil {
 		return domain.ReceiptItem{}, err
 	}
@@ -249,27 +351,31 @@ func (s *PostgresStore) AddItem(roomID string, item domain.ReceiptItem) (domain.
 	return item, nil
 }
 
-func (s *PostgresStore) ListItems(roomID string) ([]domain.ReceiptItem, error) {
+func (s *PostgresStore) ListItems(
+	roomID string,
+) ([]domain.ReceiptItem, error) {
 	ctx := context.Background()
 
 	if err := s.ensureRoomExists(ctx, roomID); err != nil {
 		return nil, err
 	}
 
-	query := `
-		SELECT
-			id,
-			room_id,
-			name,
-			quantity,
-			unit_price,
-			total
-		FROM receipt_items
-		WHERE room_id = $1
-		ORDER BY created_at ASC
-	`
-
-	rows, err := s.db.Query(ctx, query, roomID)
+	rows, err := s.db.Query(
+		ctx,
+		`
+			SELECT
+				id,
+				room_id,
+				name,
+				quantity,
+				unit_price,
+				total
+			FROM receipt_items
+			WHERE room_id = $1
+			ORDER BY created_at ASC
+		`,
+		roomID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -301,19 +407,100 @@ func (s *PostgresStore) ListItems(roomID string) ([]domain.ReceiptItem, error) {
 	return items, nil
 }
 
-func (s *PostgresStore) AddAssignment(roomID string, assignment domain.ItemAssignment) (domain.ItemAssignment, error) {
+func (s *PostgresStore) UpdateItem(
+	roomID string,
+	item domain.ReceiptItem,
+) (domain.ReceiptItem, error) {
+	ctx := context.Background()
+
+	if err := s.ensureRoomExists(ctx, roomID); err != nil {
+		return domain.ReceiptItem{}, err
+	}
+
+	item.RoomID = roomID
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`
+			UPDATE receipt_items SET
+				name = $3,
+				quantity = $4,
+				unit_price = $5,
+				total = $6
+			WHERE room_id = $1 AND id = $2
+		`,
+		roomID,
+		item.ID,
+		item.Name,
+		item.Quantity,
+		item.UnitPrice,
+		item.Total,
+	)
+	if err != nil {
+		return domain.ReceiptItem{}, err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return domain.ReceiptItem{}, ErrorItemNotFound
+	}
+
+	return item, nil
+}
+
+func (s *PostgresStore) DeleteItem(
+	roomID string,
+	itemID string,
+) error {
+	ctx := context.Background()
+
+	if err := s.ensureRoomExists(ctx, roomID); err != nil {
+		return err
+	}
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`
+			DELETE FROM receipt_items
+			WHERE room_id = $1 AND id = $2
+		`,
+		roomID,
+		itemID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return ErrorItemNotFound
+	}
+
+	return nil
+}
+
+func (s *PostgresStore) AddAssignment(
+	roomID string,
+	assignment domain.ItemAssignment,
+) (domain.ItemAssignment, error) {
 	ctx := context.Background()
 
 	if err := s.ensureRoomExists(ctx, roomID); err != nil {
 		return domain.ItemAssignment{}, err
 	}
 
-	if err := s.ensureItemExists(ctx, roomID, assignment.ItemID); err != nil {
-		return domain.ItemAssignment{}, errors.New("item does not exist")
+	if err := s.ensureItemExists(
+		ctx,
+		roomID,
+		assignment.ItemID,
+	); err != nil {
+		return domain.ItemAssignment{}, ErrorItemNotFound
 	}
 
-	if err := s.ensureParticipantExists(ctx, roomID, assignment.ParticipantID); err != nil {
-		return domain.ItemAssignment{}, errors.New("participant does not exist")
+	if err := s.ensureParticipantExists(
+		ctx,
+		roomID,
+		assignment.ParticipantID,
+	); err != nil {
+		return domain.ItemAssignment{}, ErrorParticipantNotFound
 	}
 
 	query := `
@@ -324,7 +511,11 @@ func (s *PostgresStore) AddAssignment(roomID string, assignment domain.ItemAssig
 			weight
 		)
 		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (room_id, item_id, participant_id)
+		ON CONFLICT (
+			room_id,
+			item_id,
+			participant_id
+		)
 		DO UPDATE SET
 			weight = EXCLUDED.weight
 	`
@@ -337,7 +528,6 @@ func (s *PostgresStore) AddAssignment(roomID string, assignment domain.ItemAssig
 		assignment.ParticipantID,
 		assignment.Weight,
 	)
-
 	if err != nil {
 		return domain.ItemAssignment{}, err
 	}
@@ -345,24 +535,28 @@ func (s *PostgresStore) AddAssignment(roomID string, assignment domain.ItemAssig
 	return assignment, nil
 }
 
-func (s *PostgresStore) ListAssignments(roomID string) ([]domain.ItemAssignment, error) {
+func (s *PostgresStore) ListAssignments(
+	roomID string,
+) ([]domain.ItemAssignment, error) {
 	ctx := context.Background()
 
 	if err := s.ensureRoomExists(ctx, roomID); err != nil {
 		return nil, err
 	}
 
-	query := `
-		SELECT
-			item_id,
-			participant_id,
-			weight
-		FROM item_assignments
-		WHERE room_id = $1
-		ORDER BY created_at ASC
-	`
-
-	rows, err := s.db.Query(ctx, query, roomID)
+	rows, err := s.db.Query(
+		ctx,
+		`
+			SELECT
+				item_id,
+				participant_id,
+				weight
+			FROM item_assignments
+			WHERE room_id = $1
+			ORDER BY created_at ASC
+		`,
+		roomID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +575,10 @@ func (s *PostgresStore) ListAssignments(roomID string) ([]domain.ItemAssignment,
 			return nil, err
 		}
 
-		assignments = append(assignments, assignment)
+		assignments = append(
+			assignments,
+			assignment,
+		)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -391,16 +588,56 @@ func (s *PostgresStore) ListAssignments(roomID string) ([]domain.ItemAssignment,
 	return assignments, nil
 }
 
-func (s *PostgresStore) ensureRoomExists(ctx context.Context, roomID string) error {
-	query := `
-		SELECT id
-		FROM rooms
-		WHERE id = $1
-	`
+func (s *PostgresStore) DeleteAssignment(
+	roomID string,
+	itemID string,
+	participantID string,
+) error {
+	ctx := context.Background()
 
+	if err := s.ensureRoomExists(ctx, roomID); err != nil {
+		return err
+	}
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`
+			DELETE FROM item_assignments
+			WHERE
+				room_id = $1
+				AND item_id = $2
+				AND participant_id = $3
+		`,
+		roomID,
+		itemID,
+		participantID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return ErrorNotFound
+	}
+
+	return nil
+}
+
+func (s *PostgresStore) ensureRoomExists(
+	ctx context.Context,
+	roomID string,
+) error {
 	var id string
 
-	err := s.db.QueryRow(ctx, query, roomID).Scan(&id)
+	err := s.db.QueryRow(
+		ctx,
+		`
+			SELECT id
+			FROM rooms
+			WHERE id = $1
+		`,
+		roomID,
+	).Scan(&id)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrorNotFound
@@ -409,37 +646,51 @@ func (s *PostgresStore) ensureRoomExists(ctx context.Context, roomID string) err
 	return err
 }
 
-func (s *PostgresStore) ensureItemExists(ctx context.Context, roomID string, itemID string) error {
-	query := `
-		SELECT id
-		FROM receipt_items
-		WHERE room_id = $1 AND id = $2
-	`
-
+func (s *PostgresStore) ensureItemExists(
+	ctx context.Context,
+	roomID string,
+	itemID string,
+) error {
 	var id string
 
-	err := s.db.QueryRow(ctx, query, roomID, itemID).Scan(&id)
+	err := s.db.QueryRow(
+		ctx,
+		`
+			SELECT id
+			FROM receipt_items
+			WHERE room_id = $1 AND id = $2
+		`,
+		roomID,
+		itemID,
+	).Scan(&id)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrorNotFound
+		return ErrorItemNotFound
 	}
 
 	return err
 }
 
-func (s *PostgresStore) ensureParticipantExists(ctx context.Context, roomID string, participantID string) error {
-	query := `
-		SELECT id
-		FROM participants
-		WHERE room_id = $1 AND id = $2
-	`
-
+func (s *PostgresStore) ensureParticipantExists(
+	ctx context.Context,
+	roomID string,
+	participantID string,
+) error {
 	var id string
 
-	err := s.db.QueryRow(ctx, query, roomID, participantID).Scan(&id)
+	err := s.db.QueryRow(
+		ctx,
+		`
+			SELECT id
+			FROM participants
+			WHERE room_id = $1 AND id = $2
+		`,
+		roomID,
+		participantID,
+	).Scan(&id)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrorNotFound
+		return ErrorParticipantNotFound
 	}
 
 	return err

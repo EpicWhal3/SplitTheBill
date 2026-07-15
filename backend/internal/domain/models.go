@@ -1,13 +1,13 @@
 package domain
 
 type Room struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Currency    string `json:"currency"`
-	ServiceFee  int64  `json:"service_fee"`
-	TipAmount   int64  `json:"tip_amount"`
-	Discount    int64  `json:"discount"`
-	TotalAmount int64  `json:"total_amount"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Currency      string `json:"currency"`
+	ServiceFee    int64  `json:"service_fee"`
+	TipAmount     int64  `json:"tip_amount"`
+	Discount      int64  `json:"discount"`
+	ExpectedTotal int64  `json:"expected_total"`
 }
 
 type Participant struct {
