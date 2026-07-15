@@ -4,7 +4,6 @@ type Room struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Currency    string `json:"currency"`
-	Subtotal    int64  `json:"subtotal"`
 	ServiceFee  int64  `json:"service_fee"`
 	TipAmount   int64  `json:"tip_amount"`
 	Discount    int64  `json:"discount"`

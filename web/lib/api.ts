@@ -66,17 +66,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const message = data?.message || "Request failed";
+    const message =
+      data?.error ?? data?.message ?? `Request failed: ${response.status}`;
     throw new Error(message);
   }
 
   return data as T;
 }
 
-export function createRoom(payload: {
-  title: string;
-  currency: string;
-}) {
+export function createRoom(payload: { title: string; currency: string }) {
   return request<Room>("/rooms", {
     method: "POST",
     body: JSON.stringify(payload),

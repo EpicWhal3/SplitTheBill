@@ -1,5 +1,5 @@
 export function parseMoneyToMinorUnits(value: string): number {
-  const normalized = value.replace(",", ".").trim;
+  const normalized = value.replace(",", ".").trim();
 
   if (!normalized) {
     return 0;
