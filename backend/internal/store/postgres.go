@@ -41,6 +41,10 @@ func (s *PostgresStore) CreateRoom(
 	ctx := context.Background()
 	room.ID = newID()
 
+	if room.AdminToken == "" {
+		room.AdminToken = newToken()
+	}
+
 	query := `
 		INSERT INTO rooms (
 			id,
@@ -49,9 +53,11 @@ func (s *PostgresStore) CreateRoom(
 			service_fee,
 			tip_amount,
 			discount,
-			expected_total
+			expected_total,
+			payer_participant_id,
+			admin_token
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9)
 	`
 
 	_, err := s.db.Exec(
@@ -64,6 +70,8 @@ func (s *PostgresStore) CreateRoom(
 		room.TipAmount,
 		room.Discount,
 		room.ExpectedTotal,
+		room.PayerParticipantID,
+		room.AdminToken,
 	)
 	if err != nil {
 		return domain.Room{}, err
@@ -85,7 +93,9 @@ func (s *PostgresStore) GetRoom(
 			service_fee,
 			tip_amount,
 			discount,
-			expected_total
+			expected_total,
+			COALESCE(payer_participant_id, ''),
+			admin_token
 		FROM rooms
 		WHERE id = $1
 	`
@@ -104,6 +114,8 @@ func (s *PostgresStore) GetRoom(
 		&room.TipAmount,
 		&room.Discount,
 		&room.ExpectedTotal,
+		&room.PayerParticipantID,
+		&room.AdminToken,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -130,6 +142,7 @@ func (s *PostgresStore) UpdateRoom(
 			tip_amount = $5,
 			discount = $6,
 			expected_total = $7,
+			payer_participant_id = NULLIF($8, ''),
 			updated_at = now()
 		WHERE id = $1
 	`
@@ -144,6 +157,7 @@ func (s *PostgresStore) UpdateRoom(
 		room.TipAmount,
 		room.Discount,
 		room.ExpectedTotal,
+		room.PayerParticipantID,
 	)
 	if err != nil {
 		return domain.Room{}, err
@@ -166,16 +180,27 @@ func (s *PostgresStore) AddParticipant(
 		return domain.Participant{}, err
 	}
 
+	if err := s.ensureParticipantNameAvailable(
+		ctx,
+		roomID,
+		participant.Name,
+		"",
+	); err != nil {
+		return domain.Participant{}, err
+	}
+
 	participant.ID = newID()
 	participant.RoomID = roomID
+	participant.Claimed = participant.AccessToken != ""
 
 	query := `
 		INSERT INTO participants (
 			id,
 			room_id,
-			name
+			name,
+			access_token
 		)
-		VALUES ($1, $2, $3)
+		VALUES ($1, $2, $3, NULLIF($4, ''))
 	`
 
 	_, err := s.db.Exec(
@@ -184,11 +209,167 @@ func (s *PostgresStore) AddParticipant(
 		participant.ID,
 		participant.RoomID,
 		participant.Name,
+		participant.AccessToken,
 	)
 	if err != nil {
 		return domain.Participant{}, err
 	}
 
+	return participant, nil
+}
+
+func (s *PostgresStore) JoinParticipant(
+	roomID string,
+	name string,
+) (domain.Participant, error) {
+	ctx := context.Background()
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return domain.Participant{}, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var roomExists bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)`,
+		roomID,
+	).Scan(&roomExists); err != nil {
+		return domain.Participant{}, err
+	}
+
+	if !roomExists {
+		return domain.Participant{}, ErrorNotFound
+	}
+
+	var participant domain.Participant
+	var accessToken string
+
+	err = tx.QueryRow(
+		ctx,
+		`
+			SELECT
+				id,
+				room_id,
+				name,
+				COALESCE(access_token, '')
+			FROM participants
+			WHERE room_id = $1 AND lower(name) = lower($2)
+			ORDER BY created_at ASC
+			LIMIT 1
+			FOR UPDATE
+		`,
+		roomID,
+		name,
+	).Scan(
+		&participant.ID,
+		&participant.RoomID,
+		&participant.Name,
+		&accessToken,
+	)
+
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		participant = domain.Participant{
+			ID:          newID(),
+			RoomID:      roomID,
+			Name:        name,
+			Claimed:     true,
+			AccessToken: newToken(),
+		}
+
+		_, err = tx.Exec(
+			ctx,
+			`
+				INSERT INTO participants (
+					id,
+					room_id,
+					name,
+					access_token
+				)
+				VALUES ($1, $2, $3, $4)
+			`,
+			participant.ID,
+			participant.RoomID,
+			participant.Name,
+			participant.AccessToken,
+		)
+		if err != nil {
+			return domain.Participant{}, err
+		}
+
+	case err != nil:
+		return domain.Participant{}, err
+
+	case accessToken != "":
+		return domain.Participant{}, ErrorNameTaken
+
+	default:
+		participant.AccessToken = newToken()
+		participant.Claimed = true
+
+		_, err = tx.Exec(
+			ctx,
+			`
+				UPDATE participants
+				SET access_token = $3
+				WHERE room_id = $1 AND id = $2
+			`,
+			roomID,
+			participant.ID,
+			participant.AccessToken,
+		)
+		if err != nil {
+			return domain.Participant{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Participant{}, err
+	}
+
+	return participant, nil
+}
+
+func (s *PostgresStore) FindParticipantByToken(
+	roomID string,
+	token string,
+) (domain.Participant, error) {
+	ctx := context.Background()
+	var participant domain.Participant
+
+	err := s.db.QueryRow(
+		ctx,
+		`
+			SELECT
+				id,
+				room_id,
+				name,
+				access_token
+			FROM participants
+			WHERE room_id = $1 AND access_token = $2
+		`,
+		roomID,
+		token,
+	).Scan(
+		&participant.ID,
+		&participant.RoomID,
+		&participant.Name,
+		&participant.AccessToken,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Participant{}, ErrorParticipantNotFound
+	}
+
+	if err != nil {
+		return domain.Participant{}, err
+	}
+
+	participant.Claimed = true
 	return participant, nil
 }
 
@@ -207,7 +388,8 @@ func (s *PostgresStore) ListParticipants(
 			SELECT
 				id,
 				room_id,
-				name
+				name,
+				COALESCE(access_token, '')
 			FROM participants
 			WHERE room_id = $1
 			ORDER BY created_at ASC
@@ -228,14 +410,13 @@ func (s *PostgresStore) ListParticipants(
 			&participant.ID,
 			&participant.RoomID,
 			&participant.Name,
+			&participant.AccessToken,
 		); err != nil {
 			return nil, err
 		}
 
-		participants = append(
-			participants,
-			participant,
-		)
+		participant.Claimed = participant.AccessToken != ""
+		participants = append(participants, participant)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -252,6 +433,15 @@ func (s *PostgresStore) UpdateParticipant(
 	ctx := context.Background()
 
 	if err := s.ensureRoomExists(ctx, roomID); err != nil {
+		return domain.Participant{}, err
+	}
+
+	if err := s.ensureParticipantNameAvailable(
+		ctx,
+		roomID,
+		participant.Name,
+		participant.ID,
+	); err != nil {
 		return domain.Participant{}, err
 	}
 
@@ -575,10 +765,7 @@ func (s *PostgresStore) ListAssignments(
 			return nil, err
 		}
 
-		assignments = append(
-			assignments,
-			assignment,
-		)
+		assignments = append(assignments, assignment)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -631,11 +818,7 @@ func (s *PostgresStore) ensureRoomExists(
 
 	err := s.db.QueryRow(
 		ctx,
-		`
-			SELECT id
-			FROM rooms
-			WHERE id = $1
-		`,
+		`SELECT id FROM rooms WHERE id = $1`,
 		roomID,
 	).Scan(&id)
 
@@ -694,4 +877,38 @@ func (s *PostgresStore) ensureParticipantExists(
 	}
 
 	return err
+}
+
+func (s *PostgresStore) ensureParticipantNameAvailable(
+	ctx context.Context,
+	roomID string,
+	name string,
+	excludeParticipantID string,
+) error {
+	var exists bool
+
+	err := s.db.QueryRow(
+		ctx,
+		`
+			SELECT EXISTS (
+				SELECT 1
+				FROM participants
+				WHERE room_id = $1
+					AND lower(name) = lower($2)
+					AND id <> $3
+			)
+		`,
+		roomID,
+		name,
+		excludeParticipantID,
+	).Scan(&exists)
+	if err != nil {
+		return err
+	}
+
+	if exists {
+		return ErrorNameTaken
+	}
+
+	return nil
 }
