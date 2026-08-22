@@ -1,15 +1,35 @@
 package domain
 
+import "time"
+
+type RoomStatus string
+
+const (
+	RoomStatusDraft     RoomStatus = "draft"
+	RoomStatusClaimed   RoomStatus = "claimed"
+	RoomStatusFinalized RoomStatus = "finalized"
+)
+
+type DiscountMode string
+
+const (
+	DiscountModeProportional DiscountMode = "proportional"
+	DiscountModeEqual        DiscountMode = "equal"
+)
+
 type Room struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	Currency           string `json:"currency"`
-	ServiceFee         int64  `json:"service_fee"`
-	TipAmount          int64  `json:"tip_amount"`
-	Discount           int64  `json:"discount"`
-	ExpectedTotal      int64  `json:"expected_total"`
-	PayerParticipantID string `json:"payer_participant_id"`
-	AdminToken         string `json:"-"`
+	ID                 string     `json:"id"`
+	Title              string     `json:"title"`
+	Currency           string     `json:"currency"`
+	ServiceFee         int64      `json:"service_fee"`
+	TipAmount          int64      `json:"tip_amount"`
+	Discount           int64      `json:"discount"`
+	DiscountMode       string     `json:"discount_mode"`
+	ExpectedTotal      int64      `json:"expected_total"`
+	PayerParticipantID string     `json:"payer_participant_id"`
+	Status             string     `json:"status"`
+	FinalizedAt        *time.Time `json:"finalized_at"`
+	AdminToken         string     `json:"-"`
 }
 
 type Participant struct {
@@ -43,4 +63,12 @@ type ParticipantResult struct {
 	TipShare      int64  `json:"tip_share"`
 	DiscountShare int64  `json:"discount_share"`
 	TotalAmount   int64  `json:"total_amount"`
+}
+
+type Debt struct {
+	FromParticipantID string `json:"from_participant_id"`
+	FromName          string `json:"from_name"`
+	ToParticipantID   string `json:"to_participant_id"`
+	ToName            string `json:"to_name"`
+	Amount            int64  `json:"amount"`
 }
