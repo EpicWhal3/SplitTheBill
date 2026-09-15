@@ -283,6 +283,21 @@ select:focus {
   border-radius: 16px;
 }
 
+.share-url {
+  max-width: 100%;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
 .section-heading {
   display: flex;
   align-items: flex-start;

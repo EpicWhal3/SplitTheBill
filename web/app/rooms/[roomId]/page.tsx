@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import * as QRCode from "qrcode";
 import {
   useCallback,
@@ -163,6 +162,7 @@ export default function RoomPage({ params }: Props) {
 
   useEffect(() => {
     if (roomId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       void loadRoomData(roomId, true);
     }
   }, [loadRoomData, roomId]);
@@ -219,6 +219,7 @@ export default function RoomPage({ params }: Props) {
     }
 
     clearParticipantSession(room.id);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setParticipantSession(null);
     setError(
       "Участник был удалён из комнаты. Войдите снова под другим именем.",
@@ -227,6 +228,7 @@ export default function RoomPage({ params }: Props) {
 
   useEffect(() => {
     if (!participantSession) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setParticipantWeights({});
       return;
     }
@@ -970,7 +972,9 @@ function AdminView(props: AdminViewProps) {
           </div>
         </div>
         {props.qrCodeUrl && (
-          <Image
+          /* eslint-disable-next-line @next/next/no-img-element -- QR-код приходит как data URL, оптимизация next/image здесь не нужна. */
+          <img
+            className="qr-code"
             src={props.qrCodeUrl}
             width={180}
             height={180}

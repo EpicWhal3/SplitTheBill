@@ -4,7 +4,9 @@ import (
 	"context"
 	"log"
 	"net/http"
+
 	"os"
+	"strings"
 
 	"splitthebill/backend/internal/migration"
 	"splitthebill/backend/internal/room"
@@ -33,7 +35,7 @@ func main() {
 		},
 	)
 
-	addr := ":8080"
+	addr := ":" + resolvePort()
 
 	log.Println(
 		"SplitCheck API is running on",
@@ -46,6 +48,16 @@ func main() {
 	); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func resolvePort() string {
+	port := strings.TrimSpace(os.Getenv("PORT"))
+
+	if port == "" {
+		return "8080"
+	}
+
+	return port
 }
 
 func createStore(
@@ -86,11 +98,7 @@ func createStore(
 }
 
 func withCORS(next http.Handler) http.Handler {
-	allowedOrigins := map[string]bool{
-		"http://localhost:3000":    true,
-		"http://127.0.0.1:3000":    true,
-		"http://192.168.56.1:3000": true,
-	}
+	allowedOrigins := resolveAllowedOrigins()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -116,4 +124,26 @@ func withCORS(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func resolveAllowedOrigins() map[string]bool {
+	raw := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS"))
+
+	if raw == "" {
+		raw = "http://localhost:3000,http://127.0.0.1:3000,http://192.168.56.1:3000"
+	}
+
+	allowedOrigins := make(map[string]bool)
+
+	for _, origin := range strings.Split(raw, ",") {
+		origin = strings.TrimSpace(origin)
+
+		if origin == "" || origin == "*" {
+			continue
+		}
+
+		allowedOrigins[origin] = true
+	}
+
+	return allowedOrigins
 }

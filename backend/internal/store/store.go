@@ -10,7 +10,7 @@ var (
 	ErrorNotFound            = errors.New("not found")
 	ErrorItemNotFound        = errors.New("item not found")
 	ErrorParticipantNotFound = errors.New("participant not found")
-	ErrorNameTaken           = errors.New("paricipant name as already taken")
+	ErrorNameTaken           = errors.New("participant name is already taken")
 )
 
 type Store interface {
