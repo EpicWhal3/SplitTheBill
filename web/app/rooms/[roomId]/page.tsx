@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import * as QRCode from "qrcode";
 import {
   useCallback,
@@ -969,7 +970,7 @@ function AdminView(props: AdminViewProps) {
           </div>
         </div>
         {props.qrCodeUrl && (
-          <img
+          <Image
             src={props.qrCodeUrl}
             width={180}
             height={180}
