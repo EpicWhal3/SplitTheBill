@@ -10,7 +10,7 @@ export default function HomePage() {
   const router = useRouter();
 
   const [title, setTitle] = useState("Ужин с друзьями");
-  const [currency, setCurrency] = useState("RUB");
+  const [currency, setCurrency] = useState("EUR");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 

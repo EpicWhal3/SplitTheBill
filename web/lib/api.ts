@@ -1,5 +1,9 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+export type RoomStatus = "draft" | "claiming" | "finalized";
+
+export type DiscountMode = "proportional" | "equal";
+
 export type Room = {
   id: string;
   title: string;
@@ -7,8 +11,11 @@ export type Room = {
   service_fee: number;
   tip_amount: number;
   discount: number;
+  discount_mode: DiscountMode;
   expected_total: number;
   payer_participant_id: string;
+  status: RoomStatus;
+  finalized_at: string | null;
 };
 
 export type Participant = {
@@ -43,12 +50,26 @@ export type ParticipantResult = {
   total_amount: number;
 };
 
+export type Debt = {
+  from_participant_id: string;
+  from_name: string;
+  to_participant_id: string;
+  to_name: string;
+  amount: number;
+};
+
 export type RoomDetails = {
   room: Room;
   participants: Participant[];
   items: ReceiptItem[];
   assignments: ItemAssignment[];
   subtotal: number;
+  unassigned_item_ids: string[];
+};
+
+export type CreateRoomResponse = {
+  room: Room;
+  admin_token: string;
 };
 
 export type JoinRoomResponse = {
@@ -56,14 +77,10 @@ export type JoinRoomResponse = {
   participant_token: string;
 };
 
-export type createRoomResponse = {
-  room: Room;
-  admin_token: string;
-};
-
 export type CalculateResponse = {
   room: Room;
   results: ParticipantResult[];
+  debts: Debt[];
   subtotal: number;
   calculated_total: number;
   difference: number;
@@ -115,12 +132,11 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   if (!response.ok) {
     const errorData = data as APIErrorPayload | null;
 
-    const message =
+    throw new Error(
       errorData?.error ??
-      errorData?.message ??
-      `Ошибка запроса: ${response.status}`;
-
-    throw new Error(message);
+        errorData?.message ??
+        `Ошибка запроса: ${response.status}`,
+    );
   }
 
   return data as T;
@@ -134,14 +150,15 @@ export function createRoom(payload: {
   title: string;
   currency: string;
   expected_total?: number;
-}) {
-  return request<createRoomResponse>("/rooms", {
+  discount_mode?: DiscountMode;
+}): Promise<CreateRoomResponse> {
+  return request<CreateRoomResponse>("/rooms", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
-export function getRoom(roomId: string) {
+export function getRoom(roomId: string): Promise<RoomDetails> {
   return request<RoomDetails>(`/rooms/${id(roomId)}`);
 }
 
@@ -154,10 +171,11 @@ export function updateRoom(
     service_fee: number;
     tip_amount: number;
     discount: number;
+    discount_mode: DiscountMode;
     expected_total: number;
     payer_participant_id: string;
   }>,
-) {
+): Promise<Room> {
   return request<Room>(`/rooms/${id(roomId)}`, {
     method: "PATCH",
     adminToken,
@@ -167,10 +185,8 @@ export function updateRoom(
 
 export function joinRoom(
   roomId: string,
-  payload: {
-    name: string;
-  },
-) {
+  payload: { name: string },
+): Promise<JoinRoomResponse> {
   return request<JoinRoomResponse>(`/rooms/${id(roomId)}/join`, {
     method: "POST",
     body: JSON.stringify(payload),
@@ -180,10 +196,8 @@ export function joinRoom(
 export function addParticipant(
   roomId: string,
   adminToken: string,
-  payload: {
-    name: string;
-  },
-) {
+  payload: { name: string },
+): Promise<Participant> {
   return request<Participant>(`/rooms/${id(roomId)}/participants`, {
     method: "POST",
     adminToken,
@@ -195,10 +209,8 @@ export function updateParticipant(
   roomId: string,
   participantId: string,
   adminToken: string,
-  payload: {
-    name: string;
-  },
-) {
+  payload: { name: string },
+): Promise<Participant> {
   return request<Participant>(
     `/rooms/${id(roomId)}/participants/${id(participantId)}`,
     {
@@ -211,9 +223,9 @@ export function updateParticipant(
 
 export function deleteParticipant(
   roomId: string,
-  adminToken: string,
   participantId: string,
-) {
+  adminToken: string,
+): Promise<void> {
   return request<void>(
     `/rooms/${id(roomId)}/participants/${id(participantId)}`,
     {
@@ -231,7 +243,7 @@ export function addItem(
     quantity: number;
     unit_price: number;
   },
-) {
+): Promise<ReceiptItem> {
   return request<ReceiptItem>(`/rooms/${id(roomId)}/items`, {
     method: "POST",
     adminToken,
@@ -248,7 +260,7 @@ export function updateItem(
     quantity: number;
     unit_price: number;
   }>,
-) {
+): Promise<ReceiptItem> {
   return request<ReceiptItem>(`/rooms/${id(roomId)}/items/${id(itemId)}`, {
     method: "PATCH",
     adminToken,
@@ -256,7 +268,11 @@ export function updateItem(
   });
 }
 
-export function deleteItem(roomId: string, itemId: string, adminToken: string) {
+export function deleteItem(
+  roomId: string,
+  itemId: string,
+  adminToken: string,
+): Promise<void> {
   return request<void>(`/rooms/${id(roomId)}/items/${id(itemId)}`, {
     method: "DELETE",
     adminToken,
@@ -271,7 +287,7 @@ export function addAssignment(
     participant_id: string;
     weight: number;
   },
-) {
+): Promise<ItemAssignment> {
   return request<ItemAssignment>(`/rooms/${id(roomId)}/assignments`, {
     method: "POST",
     adminToken,
@@ -284,7 +300,7 @@ export function deleteAssignment(
   itemId: string,
   participantId: string,
   adminToken: string,
-) {
+): Promise<void> {
   return request<void>(
     `/rooms/${id(roomId)}/assignments/${id(itemId)}/${id(participantId)}`,
     {
@@ -298,12 +314,14 @@ export function selectItem(
   roomId: string,
   itemId: string,
   participantToken: string,
-) {
+  weight: number,
+): Promise<ItemAssignment> {
   return request<ItemAssignment>(
     `/rooms/${id(roomId)}/selections/${id(itemId)}`,
     {
       method: "PUT",
       participantToken,
+      body: JSON.stringify({ weight }),
     },
   );
 }
@@ -312,14 +330,41 @@ export function unselectItem(
   roomId: string,
   itemId: string,
   participantToken: string,
-) {
+): Promise<void> {
   return request<void>(`/rooms/${id(roomId)}/selections/${id(itemId)}`, {
     method: "DELETE",
     participantToken,
   });
 }
 
-export function calculateRoom(roomId: string) {
+export function openRoomSelections(
+  roomId: string,
+  adminToken: string,
+): Promise<Room> {
+  return request<Room>(`/rooms/${id(roomId)}/open`, {
+    method: "POST",
+    adminToken,
+  });
+}
+
+export function finalizeRoom(
+  roomId: string,
+  adminToken: string,
+): Promise<CalculateResponse> {
+  return request<CalculateResponse>(`/rooms/${id(roomId)}/finalize`, {
+    method: "POST",
+    adminToken,
+  });
+}
+
+export function reopenRoom(roomId: string, adminToken: string): Promise<Room> {
+  return request<Room>(`/rooms/${id(roomId)}/reopen`, {
+    method: "POST",
+    adminToken,
+  });
+}
+
+export function calculateRoom(roomId: string): Promise<CalculateResponse> {
   return request<CalculateResponse>(`/rooms/${id(roomId)}/calculate`, {
     method: "POST",
   });

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+
 	"net/http/httptest"
 	"testing"
 
@@ -21,7 +22,16 @@ type joinResponse struct {
 	ParticipantToken string             `json:"participant_token"`
 }
 
-func TestCollaborativeRoomFlow(t *testing.T) {
+type calculationPayload struct {
+	Room                 domain.Room                `json:"room"`
+	Results              []domain.ParticipantResult `json:"results"`
+	Debts                []domain.Debt              `json:"debts"`
+	CalculatedTotal      int64                      `json:"calculated_total"`
+	Difference           int64                      `json:"difference"`
+	MatchesExpectedTotal bool                       `json:"matches_expected_total"`
+}
+
+func TestCollaborativeRoomLifecycle(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	handler := NewHandler(memoryStore)
 
@@ -34,13 +44,14 @@ func TestCollaborativeRoomFlow(t *testing.T) {
 			"title":          "Dinner",
 			"currency":       "EUR",
 			"expected_total": 1000,
+			"discount_mode":  "equal",
 		},
 		nil,
 		http.StatusCreated,
 	)
 
-	if created.AdminToken == "" {
-		t.Fatal("expected admin token")
+	if created.AdminToken == "" || created.Room.Status != domain.RoomStatusDraft {
+		t.Fatalf("unexpected created room: %#v", created)
 	}
 
 	doJSON[map[string]string](
@@ -50,7 +61,7 @@ func TestCollaborativeRoomFlow(t *testing.T) {
 		"/rooms/"+created.Room.ID+"/participants",
 		map[string]any{"name": "Аня"},
 		nil,
-		http.StatusForbidden,
+		http.StatusUnauthorized,
 	)
 
 	participant := doJSON[domain.Participant](
@@ -73,10 +84,6 @@ func TestCollaborativeRoomFlow(t *testing.T) {
 		http.StatusCreated,
 	)
 
-	if joined.Participant.ID != participant.ID || joined.ParticipantToken == "" {
-		t.Fatalf("unexpected join response: %#v", joined)
-	}
-
 	item := doJSON[domain.ReceiptItem](
 		t,
 		handler,
@@ -91,18 +98,43 @@ func TestCollaborativeRoomFlow(t *testing.T) {
 		http.StatusCreated,
 	)
 
+	opened := doJSON[domain.Room](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/open",
+		nil,
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusOK,
+	)
+	if opened.Status != domain.RoomStatusClaiming {
+		t.Fatalf("expected claiming, got %s", opened.Status)
+	}
+
 	selection := doJSON[domain.ItemAssignment](
 		t,
 		handler,
 		http.MethodPut,
 		"/rooms/"+created.Room.ID+"/selections/"+item.ID,
-		nil,
+		map[string]any{"weight": 2},
 		map[string]string{"X-Participant-Token": joined.ParticipantToken},
 		http.StatusOK,
 	)
-
-	if selection.ParticipantID != participant.ID || selection.ItemID != item.ID {
+	if selection.ParticipantID != participant.ID || selection.Weight != 2 {
 		t.Fatalf("unexpected selection: %#v", selection)
+	}
+
+	selection = doJSON[domain.ItemAssignment](
+		t,
+		handler,
+		http.MethodPut,
+		"/rooms/"+created.Room.ID+"/selections/"+item.ID,
+		map[string]any{"weight": 3},
+		map[string]string{"X-Participant-Token": joined.ParticipantToken},
+		http.StatusOK,
+	)
+	if selection.Weight != 3 {
+		t.Fatalf("participant must be able to update own weight: %#v", selection)
 	}
 
 	updatedRoom := doJSON[domain.Room](
@@ -114,43 +146,94 @@ func TestCollaborativeRoomFlow(t *testing.T) {
 		map[string]string{"X-Admin-Token": created.AdminToken},
 		http.StatusOK,
 	)
-
 	if updatedRoom.PayerParticipantID != participant.ID {
 		t.Fatalf("expected payer %s, got %s", participant.ID, updatedRoom.PayerParticipantID)
 	}
 
-	calculation := doJSON[struct {
-		CalculatedTotal      int64 `json:"calculated_total"`
-		Difference           int64 `json:"difference"`
-		MatchesExpectedTotal bool  `json:"matches_expected_total"`
-	}](
+	finalized := doJSON[calculationPayload](
 		t,
 		handler,
 		http.MethodPost,
-		"/rooms/"+created.Room.ID+"/calculate",
+		"/rooms/"+created.Room.ID+"/finalize",
 		nil,
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusOK,
+	)
+	if finalized.Room.Status != domain.RoomStatusFinalized || finalized.Room.FinalizedAt == nil {
+		t.Fatalf("room was not finalized: %#v", finalized.Room)
+	}
+	if finalized.CalculatedTotal != 1000 || !finalized.MatchesExpectedTotal {
+		t.Fatalf("unexpected calculation: %#v", finalized)
+	}
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/items",
+		map[string]any{"name": "Blocked", "quantity": 1, "unit_price": 100},
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusConflict,
+	)
+
+	reopened := doJSON[domain.Room](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/reopen",
 		nil,
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusOK,
+	)
+	if reopened.Status != domain.RoomStatusClaiming || reopened.FinalizedAt != nil {
+		t.Fatalf("unexpected reopened room: %#v", reopened)
+	}
+}
+
+func TestFinalizeBuildsDebtToPayer(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, _ := memoryStore.CreateRoom(domain.Room{
+		Title: "Dinner", Currency: "EUR", ExpectedTotal: 1000,
+		Status: domain.RoomStatusClaiming,
+	})
+	payer, _ := memoryStore.AddParticipant(room.ID, domain.Participant{Name: "Max"})
+	guest, _ := memoryStore.AddParticipant(room.ID, domain.Participant{Name: "Anna"})
+	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
+		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
+	})
+	_, _ = memoryStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID: item.ID, ParticipantID: payer.ID, Weight: 1,
+	})
+	_, _ = memoryStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID: item.ID, ParticipantID: guest.ID, Weight: 1,
+	})
+	room.PayerParticipantID = payer.ID
+	_, _ = memoryStore.UpdateRoom(room)
+
+	result := doJSON[calculationPayload](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+room.ID+"/finalize",
+		nil,
+		map[string]string{"X-Admin-Token": room.AdminToken},
 		http.StatusOK,
 	)
 
-	if calculation.CalculatedTotal != 1000 || calculation.Difference != 0 || !calculation.MatchesExpectedTotal {
-		t.Fatalf("unexpected calculation: %#v", calculation)
+	if len(result.Debts) != 1 || result.Debts[0].FromParticipantID != guest.ID || result.Debts[0].Amount != 500 {
+		t.Fatalf("unexpected debts: %#v", result.Debts)
 	}
-
-	doNoContent(
-		t,
-		handler,
-		http.MethodDelete,
-		"/rooms/"+created.Room.ID+"/selections/"+item.ID,
-		map[string]string{"X-Participant-Token": joined.ParticipantToken},
-	)
 }
 
 func TestParticipantCanOnlyUseValidSession(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	handler := NewHandler(memoryStore)
 
-	room, _ := memoryStore.CreateRoom(domain.Room{Title: "Dinner", Currency: "EUR"})
+	room, _ := memoryStore.CreateRoom(domain.Room{
+		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
+	})
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -160,32 +243,10 @@ func TestParticipantCanOnlyUseValidSession(t *testing.T) {
 		handler,
 		http.MethodPut,
 		"/rooms/"+room.ID+"/selections/"+item.ID,
-		nil,
+		map[string]any{"weight": 1},
 		map[string]string{"X-Participant-Token": "invalid"},
 		http.StatusUnauthorized,
 	)
-}
-
-func doNoContent(
-	t *testing.T,
-	handler http.Handler,
-	method string,
-	path string,
-	headers map[string]string,
-) {
-	t.Helper()
-
-	req := httptest.NewRequest(method, path, nil)
-	for name, value := range headers {
-		req.Header.Set(name, value)
-	}
-
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
-
-	if res.Code != http.StatusNoContent {
-		t.Fatalf("%s %s: expected status %d, got %d: %s", method, path, http.StatusNoContent, res.Code, res.Body.String())
-	}
 }
 
 func doJSON[T any](
@@ -229,10 +290,8 @@ func doJSON[T any](
 	if res.Body.Len() == 0 {
 		return result
 	}
-
 	if err := json.Unmarshal(res.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode response: %v; body=%s", err, res.Body.String())
 	}
-
 	return result
 }

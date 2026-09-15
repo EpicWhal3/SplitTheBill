@@ -1,6 +1,6 @@
 "use client";
 
-import QRCode from "qrcode";
+import * as QRCode from "qrcode";
 import {
   useCallback,
   useEffect,
@@ -18,11 +18,14 @@ import {
   deleteAssignment,
   deleteItem,
   deleteParticipant,
+  finalizeRoom,
   getRoom,
   type ItemAssignment,
   joinRoom,
+  openRoomSelections,
   type Participant,
   type ReceiptItem,
+  reopenRoom,
   type Room,
   selectItem,
   unselectItem,
@@ -47,12 +50,15 @@ type Props = {
   }>;
 };
 
+type WeightDrafts = Record<string, string>;
+
 export default function RoomPage({ params }: Props) {
   const [roomId, setRoomId] = useState("");
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [items, setItems] = useState<ReceiptItem[]>([]);
   const [assignments, setAssignments] = useState<ItemAssignment[]>([]);
+  const [unassignedItemIds, setUnassignedItemIds] = useState<string[]>([]);
   const [calculation, setCalculation] = useState<CalculateResponse | null>(
     null,
   );
@@ -69,10 +75,17 @@ export default function RoomPage({ params }: Props) {
   const [itemPrice, setItemPrice] = useState("");
   const [selectedItemId, setSelectedItemId] = useState("");
   const [selectedParticipantId, setSelectedParticipantId] = useState("");
-  const [weight, setWeight] = useState("1");
+  const [adminWeight, setAdminWeight] = useState("1");
+  const [participantWeights, setParticipantWeights] = useState<WeightDrafts>(
+    {},
+  );
+
   const [serviceFee, setServiceFee] = useState("0");
   const [tipAmount, setTipAmount] = useState("0");
   const [discount, setDiscount] = useState("0");
+  const [discountMode, setDiscountMode] = useState<"proportional" | "equal">(
+    "proportional",
+  );
   const [expectedTotal, setExpectedTotal] = useState("0");
   const [payerParticipantId, setPayerParticipantId] = useState("");
 
@@ -101,6 +114,7 @@ export default function RoomPage({ params }: Props) {
         setParticipants(nextParticipants);
         setItems(nextItems);
         setAssignments(nextAssignments);
+        setUnassignedItemIds(data.unassigned_item_ids ?? []);
         setLastUpdatedAt(new Date());
 
         setSelectedItemId((current) =>
@@ -119,6 +133,7 @@ export default function RoomPage({ params }: Props) {
           setServiceFee(String(data.room.service_fee / 100));
           setTipAmount(String(data.room.tip_amount / 100));
           setDiscount(String(data.room.discount / 100));
+          setDiscountMode(data.room.discount_mode);
           setExpectedTotal(String(data.room.expected_total / 100));
           setPayerParticipantId(data.room.payer_participant_id ?? "");
         }
@@ -146,11 +161,9 @@ export default function RoomPage({ params }: Props) {
   }, [params]);
 
   useEffect(() => {
-    if (!roomId) {
-      return;
+    if (roomId) {
+      void loadRoomData(roomId, true);
     }
-
-    void loadRoomData(roomId, true);
   }, [loadRoomData, roomId]);
 
   useEffect(() => {
@@ -162,9 +175,7 @@ export default function RoomPage({ params }: Props) {
       void loadRoomData(roomId, false, true);
     }, 3000);
 
-    return () => {
-      window.clearInterval(intervalId);
-    };
+    return () => window.clearInterval(intervalId);
   }, [loadRoomData, roomId]);
 
   useEffect(() => {
@@ -179,7 +190,7 @@ export default function RoomPage({ params }: Props) {
       margin: 1,
       errorCorrectionLevel: "M",
     })
-      .then((url) => {
+      .then((url: string) => {
         if (!cancelled) {
           setQrCodeUrl(url);
         }
@@ -213,6 +224,35 @@ export default function RoomPage({ params }: Props) {
     );
   }, [participantSession, participants, room]);
 
+  useEffect(() => {
+    if (!participantSession) {
+      setParticipantWeights({});
+      return;
+    }
+
+    const next: WeightDrafts = {};
+    for (const assignment of assignments) {
+      if (assignment.participant_id === participantSession.participantId) {
+        next[assignment.item_id] = String(assignment.weight);
+      }
+    }
+    setParticipantWeights(next);
+  }, [assignments, participantSession]);
+
+  useEffect(() => {
+    if (!roomId || room?.status !== "finalized") {
+      return;
+    }
+
+    void calculateRoom(roomId)
+      .then(setCalculation)
+      .catch((err: unknown) => {
+        setError(
+          err instanceof Error ? err.message : "Не удалось загрузить итог",
+        );
+      });
+  }, [room?.finalized_at, room?.status, roomId]);
+
   async function runAdminMutation(
     action: () => Promise<unknown>,
   ): Promise<boolean> {
@@ -226,7 +266,7 @@ export default function RoomPage({ params }: Props) {
 
     try {
       await action();
-      await loadRoomData(roomId, false);
+      await loadRoomData(roomId, true);
       setCalculation(null);
       return true;
     } catch (err) {
@@ -234,12 +274,10 @@ export default function RoomPage({ params }: Props) {
         err instanceof Error ? err.message : "Ошибка выполнения операции";
 
       setError(message);
-
       if (message === "organizer access required") {
         clearAdminToken(roomId);
         setAdminToken("");
       }
-
       return false;
     } finally {
       setLoading(false);
@@ -269,10 +307,7 @@ export default function RoomPage({ params }: Props) {
     setError("");
 
     try {
-      const result = await joinRoom(roomId, {
-        name,
-      });
-
+      const result = await joinRoom(roomId, { name });
       const session: ParticipantSession = {
         participantId: result.participant.id,
         participantToken: result.participant_token,
@@ -289,6 +324,40 @@ export default function RoomPage({ params }: Props) {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function saveParticipantWeight(item: ReceiptItem, weightValue: string) {
+    if (!participantSession || !roomId) {
+      return;
+    }
+
+    const numericWeight = Number(weightValue);
+    if (
+      !Number.isInteger(numericWeight) ||
+      numericWeight < 1 ||
+      numericWeight > 1000
+    ) {
+      setError("Вес должен быть целым числом от 1 до 1000");
+      return;
+    }
+
+    setSelectionLoadingId(item.id);
+    setError("");
+
+    try {
+      await selectItem(
+        roomId,
+        item.id,
+        participantSession.participantToken,
+        numericWeight,
+      );
+      await loadRoomData(roomId, false);
+      setCalculation(null);
+    } catch (err) {
+      handleParticipantError(err);
+    } finally {
+      setSelectionLoadingId("");
     }
   }
 
@@ -314,23 +383,32 @@ export default function RoomPage({ params }: Props) {
           participantSession.participantToken,
         );
       } else {
-        await selectItem(roomId, item.id, participantSession.participantToken);
+        await selectItem(
+          roomId,
+          item.id,
+          participantSession.participantToken,
+          1,
+        );
       }
 
       await loadRoomData(roomId, false);
       setCalculation(null);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Не удалось изменить выбор";
-
-      setError(message);
-
-      if (message === "participant session is invalid") {
-        clearParticipantSession(roomId);
-        setParticipantSession(null);
-      }
+      handleParticipantError(err);
     } finally {
       setSelectionLoadingId("");
+    }
+  }
+
+  function handleParticipantError(err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Не удалось изменить выбор";
+
+    setError(message);
+
+    if (message === "participant session is invalid" && roomId) {
+      clearParticipantSession(roomId);
+      setParticipantSession(null);
     }
   }
 
@@ -415,6 +493,7 @@ export default function RoomPage({ params }: Props) {
         service_fee: parsedServiceFee,
         tip_amount: parsedTipAmount,
         discount: parsedDiscount,
+        discount_mode: discountMode,
         expected_total: parsedExpectedTotal,
         payer_participant_id: payerParticipantId,
       }),
@@ -423,7 +502,6 @@ export default function RoomPage({ params }: Props) {
 
   async function handleAddParticipant(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-
     const name = participantName.trim();
     if (!name) {
       return;
@@ -432,7 +510,6 @@ export default function RoomPage({ params }: Props) {
     const success = await runAdminMutation(() =>
       addParticipant(roomId, adminToken, { name }),
     );
-
     if (success) {
       setParticipantName("");
     }
@@ -440,13 +517,7 @@ export default function RoomPage({ params }: Props) {
 
   async function handleEditParticipant(participant: Participant) {
     const name = window.prompt("Новое имя участника", participant.name);
-
-    if (name === null) {
-      return;
-    }
-
-    if (!name.trim()) {
-      setError("Имя участника не может быть пустым");
+    if (name === null || !name.trim()) {
       return;
     }
 
@@ -458,11 +529,11 @@ export default function RoomPage({ params }: Props) {
   }
 
   async function handleDeleteParticipant(participant: Participant) {
-    const confirmed = window.confirm(
-      `Удалить участника «${participant.name}»? Его отметки на блюдах также будут удалены.`,
-    );
-
-    if (!confirmed) {
+    if (
+      !window.confirm(
+        `Удалить участника «${participant.name}»? Его отметки также будут удалены.`,
+      )
+    ) {
       return;
     }
 
@@ -481,13 +552,8 @@ export default function RoomPage({ params }: Props) {
       setError("Количество должно быть положительным целым числом");
       return;
     }
-
-    if (unitPrice === null || unitPrice <= 0) {
-      setError("Цена должна быть больше 0");
-      return;
-    }
-
-    if (!itemName.trim()) {
+    if (unitPrice === null || unitPrice <= 0 || !itemName.trim()) {
+      setError("Название и положительная цена обязательны");
       return;
     }
 
@@ -511,12 +577,10 @@ export default function RoomPage({ params }: Props) {
     if (name === null) {
       return;
     }
-
     const quantityText = window.prompt("Количество", String(item.quantity));
     if (quantityText === null) {
       return;
     }
-
     const priceText = window.prompt(
       "Цена за штуку",
       String(item.unit_price / 100),
@@ -527,17 +591,14 @@ export default function RoomPage({ params }: Props) {
 
     const quantity = Number(quantityText);
     const unitPrice = tryParseMoneyToMinorUnits(priceText);
-
-    if (!name.trim()) {
-      setError("Название позиции не может быть пустым");
-      return;
-    }
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      setError("Количество должно быть положительным целым числом");
-      return;
-    }
-    if (unitPrice === null || unitPrice <= 0) {
-      setError("Цена должна быть больше 0");
+    if (
+      !name.trim() ||
+      !Number.isInteger(quantity) ||
+      quantity <= 0 ||
+      unitPrice === null ||
+      unitPrice <= 0
+    ) {
+      setError("Проверьте название, количество и цену");
       return;
     }
 
@@ -551,11 +612,11 @@ export default function RoomPage({ params }: Props) {
   }
 
   async function handleDeleteItem(item: ReceiptItem) {
-    const confirmed = window.confirm(
-      `Удалить позицию «${item.name}»? Все её отметки также будут удалены.`,
-    );
-
-    if (!confirmed) {
+    if (
+      !window.confirm(
+        `Удалить позицию «${item.name}»? Все отметки также будут удалены.`,
+      )
+    ) {
       return;
     }
 
@@ -565,13 +626,15 @@ export default function RoomPage({ params }: Props) {
   async function handleAddAssignment(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const numericWeight = Number(weight);
-    if (!Number.isInteger(numericWeight) || numericWeight <= 0) {
-      setError("Вес должен быть положительным целым числом");
-      return;
-    }
-
-    if (!selectedItemId || !selectedParticipantId) {
+    const numericWeight = Number(adminWeight);
+    if (
+      !Number.isInteger(numericWeight) ||
+      numericWeight < 1 ||
+      numericWeight > 1000 ||
+      !selectedItemId ||
+      !selectedParticipantId
+    ) {
+      setError("Выберите позицию, участника и вес от 1 до 1000");
       return;
     }
 
@@ -602,7 +665,6 @@ export default function RoomPage({ params }: Props) {
 
     setLoading(true);
     setError("");
-
     try {
       setCalculation(await calculateRoom(roomId));
     } catch (err) {
@@ -612,51 +674,66 @@ export default function RoomPage({ params }: Props) {
     }
   }
 
+  async function handleOpenSelections() {
+    await runAdminMutation(() => openRoomSelections(roomId, adminToken));
+  }
+
+  async function handleFinalize() {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await finalizeRoom(roomId, adminToken);
+      setCalculation(result);
+      await loadRoomData(roomId, true);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Не удалось завершить распределение",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleReopen() {
+    await runAdminMutation(() => reopenRoom(roomId, adminToken));
+  }
+
+  async function handleCopySummary() {
+    if (!room || !calculation) {
+      return;
+    }
+
+    const lines = [
+      `${room.title}`,
+      `Итог: ${formatMoney(calculation.calculated_total, room.currency)}`,
+      "",
+      ...calculation.debts.map(
+        (debt) =>
+          `${debt.from_name} должен(на) ${debt.to_name}: ${formatMoney(
+            debt.amount,
+            room.currency,
+          )}`,
+      ),
+    ];
+
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setCopyState("Итог скопирован");
+    window.setTimeout(() => setCopyState(""), 2500);
+  }
+
   const subtotal = useMemo(
     () => items.reduce((sum, item) => sum + item.total, 0),
     [items],
-  );
-
-  const assignmentRows = useMemo(
-    () =>
-      assignments.map((assignment) => {
-        const item = items.find((value) => value.id === assignment.item_id);
-        const participant = participants.find(
-          (value) => value.id === assignment.participant_id,
-        );
-
-        return {
-          ...assignment,
-          itemName: item?.name ?? assignment.item_id,
-          participantName: participant?.name ?? assignment.participant_id,
-        };
-      }),
-    [assignments, items, participants],
-  );
-
-  const unassignedItems = useMemo(
-    () =>
-      items.filter(
-        (item) =>
-          !assignments.some((assignment) => assignment.item_id === item.id),
-      ),
-    [assignments, items],
   );
 
   const payer = useMemo(
     () =>
       participants.find(
         (participant) => participant.id === room?.payer_participant_id,
-      ) ?? null,
-    [participants, room],
-  );
-
-  const currentParticipant = useMemo(
-    () =>
-      participants.find(
-        (participant) => participant.id === participantSession?.participantId,
-      ) ?? null,
-    [participantSession, participants],
+      ),
+    [participants, room?.payer_participant_id],
   );
 
   const participantPreview = useMemo(() => {
@@ -673,6 +750,21 @@ export default function RoomPage({ params }: Props) {
     );
   }, [assignments, items, participantSession, participants, room]);
 
+  const assignmentRows = useMemo(
+    () =>
+      assignments.map((assignment) => ({
+        ...assignment,
+        itemName:
+          items.find((item) => item.id === assignment.item_id)?.name ??
+          assignment.item_id,
+        participantName:
+          participants.find(
+            (participant) => participant.id === assignment.participant_id,
+          )?.name ?? assignment.participant_id,
+      })),
+    [assignments, items, participants],
+  );
+
   if (!authReady || !room) {
     return (
       <main>
@@ -682,680 +774,968 @@ export default function RoomPage({ params }: Props) {
     );
   }
 
-  if (adminToken) {
-    return (
-      <main>
-        <RoomHeader
+  const isAdmin = Boolean(adminToken);
+
+  return (
+    <main>
+      <RoomHeader
+        room={room}
+        role={isAdmin ? "Организатор" : "Участник"}
+        lastUpdatedAt={lastUpdatedAt}
+      />
+
+      <StatusPanel
+        room={room}
+        isAdmin={isAdmin}
+        loading={loading}
+        unassignedCount={unassignedItemIds.length}
+        onOpen={() => void handleOpenSelections()}
+        onFinalize={() => void handleFinalize()}
+        onReopen={() => void handleReopen()}
+      />
+
+      {error && <p className="error card">{translateError(error)}</p>}
+      {copyState && <p className="success card">{copyState}</p>}
+
+      {isAdmin ? (
+        <AdminView
           room={room}
-          role="Организатор"
-          lastUpdatedAt={lastUpdatedAt}
+          participants={participants}
+          items={items}
+          assignmentRows={assignmentRows}
+          subtotal={subtotal}
+          qrCodeUrl={qrCodeUrl}
+          shareUrl={shareUrl}
+          loading={loading}
+          serviceFee={serviceFee}
+          tipAmount={tipAmount}
+          discount={discount}
+          discountMode={discountMode}
+          expectedTotal={expectedTotal}
+          payerParticipantId={payerParticipantId}
+          participantName={participantName}
+          itemName={itemName}
+          itemQuantity={itemQuantity}
+          itemPrice={itemPrice}
+          selectedItemId={selectedItemId}
+          selectedParticipantId={selectedParticipantId}
+          adminWeight={adminWeight}
+          calculation={calculation}
+          unassignedItemIds={unassignedItemIds}
+          onCopyLink={() => void handleCopyLink()}
+          onShareLink={() => void handleShareLink()}
+          onCopySummary={() => void handleCopySummary()}
+          onSetServiceFee={setServiceFee}
+          onSetTipAmount={setTipAmount}
+          onSetDiscount={setDiscount}
+          onSetDiscountMode={setDiscountMode}
+          onSetExpectedTotal={setExpectedTotal}
+          onSetPayerParticipantId={setPayerParticipantId}
+          onSetParticipantName={setParticipantName}
+          onSetItemName={setItemName}
+          onSetItemQuantity={setItemQuantity}
+          onSetItemPrice={setItemPrice}
+          onSetSelectedItemId={setSelectedItemId}
+          onSetSelectedParticipantId={setSelectedParticipantId}
+          onSetAdminWeight={setAdminWeight}
+          onUpdateCharges={handleUpdateCharges}
+          onAddParticipant={handleAddParticipant}
+          onEditParticipant={(participant) =>
+            void handleEditParticipant(participant)
+          }
+          onDeleteParticipant={(participant) =>
+            void handleDeleteParticipant(participant)
+          }
+          onAddItem={handleAddItem}
+          onEditItem={(item) => void handleEditItem(item)}
+          onDeleteItem={(item) => void handleDeleteItem(item)}
+          onAddAssignment={handleAddAssignment}
+          onDeleteAssignment={(assignment) =>
+            void handleDeleteAssignment(assignment)
+          }
+          onCalculate={() => void handleCalculate()}
         />
+      ) : (
+        <ParticipantView
+          room={room}
+          participants={participants}
+          items={items}
+          assignments={assignments}
+          participantSession={participantSession}
+          participantPreview={participantPreview}
+          participantWeights={participantWeights}
+          calculation={calculation}
+          joinName={joinName}
+          loading={loading}
+          selectionLoadingId={selectionLoadingId}
+          payerName={payer?.name ?? ""}
+          onSetJoinName={setJoinName}
+          onJoin={handleJoin}
+          onToggleSelection={(item) => void handleToggleSelection(item)}
+          onWeightChange={(itemId, value) =>
+            setParticipantWeights((current) => ({
+              ...current,
+              [itemId]: value,
+            }))
+          }
+          onSaveWeight={(item, value) =>
+            void saveParticipantWeight(item, value)
+          }
+          onLeave={handleLeaveParticipantMode}
+          onRefresh={() => void loadRoomData(roomId, false)}
+        />
+      )}
+    </main>
+  );
+}
 
-        {error && <p className="error notice">{error}</p>}
+type AdminViewProps = {
+  room: Room;
+  participants: Participant[];
+  items: ReceiptItem[];
+  assignmentRows: Array<
+    ItemAssignment & {
+      itemName: string;
+      participantName: string;
+    }
+  >;
+  subtotal: number;
+  qrCodeUrl: string;
+  shareUrl: string;
+  loading: boolean;
+  serviceFee: string;
+  tipAmount: string;
+  discount: string;
+  discountMode: "proportional" | "equal";
+  expectedTotal: string;
+  payerParticipantId: string;
+  participantName: string;
+  itemName: string;
+  itemQuantity: string;
+  itemPrice: string;
+  selectedItemId: string;
+  selectedParticipantId: string;
+  adminWeight: string;
+  calculation: CalculateResponse | null;
+  unassignedItemIds: string[];
+  onCopyLink: () => void;
+  onShareLink: () => void;
+  onCopySummary: () => void;
+  onSetServiceFee: (value: string) => void;
+  onSetTipAmount: (value: string) => void;
+  onSetDiscount: (value: string) => void;
+  onSetDiscountMode: (value: "proportional" | "equal") => void;
+  onSetExpectedTotal: (value: string) => void;
+  onSetPayerParticipantId: (value: string) => void;
+  onSetParticipantName: (value: string) => void;
+  onSetItemName: (value: string) => void;
+  onSetItemQuantity: (value: string) => void;
+  onSetItemPrice: (value: string) => void;
+  onSetSelectedItemId: (value: string) => void;
+  onSetSelectedParticipantId: (value: string) => void;
+  onSetAdminWeight: (value: string) => void;
+  onUpdateCharges: (event: SubmitEvent<HTMLFormElement>) => void;
+  onAddParticipant: (event: SubmitEvent<HTMLFormElement>) => void;
+  onEditParticipant: (participant: Participant) => void;
+  onDeleteParticipant: (participant: Participant) => void;
+  onAddItem: (event: SubmitEvent<HTMLFormElement>) => void;
+  onEditItem: (item: ReceiptItem) => void;
+  onDeleteItem: (item: ReceiptItem) => void;
+  onAddAssignment: (event: SubmitEvent<HTMLFormElement>) => void;
+  onDeleteAssignment: (assignment: ItemAssignment) => void;
+  onCalculate: () => void;
+};
 
-        <section className="card share-card">
-          <div>
-            <p className="eyebrow">Приглашение участников</p>
-            <h2>Отправьте эту ссылку</h2>
-            <p className="muted">
-              В другом браузере откроется простой экран входа и выбора блюд.
-              Ключ организатора в ссылку не включается.
-            </p>
+function AdminView(props: AdminViewProps) {
+  const locked = props.room.status === "finalized";
 
-            <div className="share-line">
-              <input readOnly value={shareUrl} aria-label="Ссылка на комнату" />
-              <button type="button" onClick={handleCopyLink}>
-                Копировать
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleShareLink}
-              >
-                Поделиться
-              </button>
-            </div>
-
-            {copyState && <p className="success">{copyState}</p>}
+  return (
+    <>
+      <section className="card share-card">
+        <div>
+          <p className="eyebrow">Ссылка для участников</p>
+          <p className="share-url">{props.shareUrl}</p>
+          <div className="actions">
+            <button type="button" onClick={props.onCopyLink}>
+              Копировать ссылку
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={props.onShareLink}
+            >
+              Поделиться
+            </button>
           </div>
+        </div>
+        {props.qrCodeUrl && (
+          <img
+            src={props.qrCodeUrl}
+            width={180}
+            height={180}
+            alt="QR-код комнаты"
+          />
+        )}
+      </section>
 
-          {qrCodeUrl && (
-            <img
-              className="qr-code"
-              src={qrCodeUrl}
-              alt="QR-код ссылки на комнату"
-              width={220}
-              height={220}
+      <section className="card">
+        <h2>Суммы и правила</h2>
+        <form onSubmit={props.onUpdateCharges} className="grid grid-3">
+          <MoneyInput
+            label="Итог на чеке"
+            value={props.expectedTotal}
+            onChange={props.onSetExpectedTotal}
+            disabled={locked}
+          />
+          <MoneyInput
+            label="Сервисный сбор"
+            value={props.serviceFee}
+            onChange={props.onSetServiceFee}
+            disabled={locked}
+          />
+          <MoneyInput
+            label="Чаевые"
+            value={props.tipAmount}
+            onChange={props.onSetTipAmount}
+            disabled={locked}
+          />
+          <MoneyInput
+            label="Скидка"
+            value={props.discount}
+            onChange={props.onSetDiscount}
+            disabled={locked}
+          />
+
+          <label>
+            Как разделить скидку
+            <select
+              value={props.discountMode}
+              disabled={locked}
+              onChange={(event) =>
+                props.onSetDiscountMode(
+                  event.target.value as "proportional" | "equal",
+                )
+              }
+            >
+              <option value="proportional">
+                Пропорционально стоимости блюд
+              </option>
+              <option value="equal">Поровну между участниками счёта</option>
+            </select>
+          </label>
+
+          <label>
+            Кто оплатил весь чек
+            <select
+              value={props.payerParticipantId}
+              disabled={locked}
+              onChange={(event) =>
+                props.onSetPayerParticipantId(event.target.value)
+              }
+            >
+              <option value="">Не выбран</option>
+              {props.participants.map((participant) => (
+                <option key={participant.id} value={participant.id}>
+                  {participant.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button disabled={props.loading || locked}>Сохранить правила</button>
+        </form>
+
+        <p className="muted">
+          При пропорциональном режиме участник получает ту же долю скидки, что и
+          его доля блюд. При равном режиме скидка делится поровну, но сумма
+          участника никогда не становится отрицательной.
+        </p>
+        <p className="muted">
+          Сумма позиций: {formatMoney(props.subtotal, props.room.currency)}
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>Участники</h2>
+        <form onSubmit={props.onAddParticipant} className="grid grid-2">
+          <label>
+            Имя участника
+            <input
+              value={props.participantName}
+              disabled={locked}
+              maxLength={80}
+              onChange={(event) =>
+                props.onSetParticipantName(event.target.value)
+              }
             />
-          )}
-        </section>
+          </label>
+          <button disabled={props.loading || locked}>Добавить участника</button>
+        </form>
 
-        <section className="card">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Настройки счёта</p>
-              <h2>Суммы и плательщик</h2>
-            </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Имя</th>
+                <th>Вошёл по ссылке</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.participants.map((participant) => (
+                <tr key={participant.id}>
+                  <td>{participant.name}</td>
+                  <td>{participant.claimed ? "Да" : "Нет"}</td>
+                  <td>
+                    <div className="actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={locked}
+                        onClick={() => props.onEditParticipant(participant)}
+                      >
+                        Изменить
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={locked}
+                        onClick={() => props.onDeleteParticipant(participant)}
+                      >
+                        Удалить
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-            <p className="metric">
-              Позиции: {formatMoney(subtotal, room.currency)}
-            </p>
+      <section className="card">
+        <h2>Позиции чека</h2>
+        <form onSubmit={props.onAddItem} className="grid grid-3">
+          <label>
+            Название
+            <input
+              value={props.itemName}
+              disabled={locked}
+              onChange={(event) => props.onSetItemName(event.target.value)}
+            />
+          </label>
+          <label>
+            Количество
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={props.itemQuantity}
+              disabled={locked}
+              onChange={(event) => props.onSetItemQuantity(event.target.value)}
+            />
+          </label>
+          <MoneyInput
+            label="Цена за штуку"
+            value={props.itemPrice}
+            onChange={props.onSetItemPrice}
+            disabled={locked}
+            positive
+          />
+          <button disabled={props.loading || locked}>Добавить позицию</button>
+        </form>
+
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Название</th>
+                <th>Кол-во</th>
+                <th>Цена</th>
+                <th>Итого</th>
+                <th>Статус</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.items.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.name}</td>
+                  <td>{item.quantity}</td>
+                  <td>{formatMoney(item.unit_price, props.room.currency)}</td>
+                  <td>{formatMoney(item.total, props.room.currency)}</td>
+                  <td>
+                    {props.unassignedItemIds.includes(item.id) ? (
+                      <span className="status-warning">Не распределено</span>
+                    ) : (
+                      <span className="success">Распределено</span>
+                    )}
+                  </td>
+                  <td>
+                    <div className="actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={locked}
+                        onClick={() => props.onEditItem(item)}
+                      >
+                        Изменить
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={locked}
+                        onClick={() => props.onDeleteItem(item)}
+                      >
+                        Удалить
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Распределение позиций</h2>
+        <form onSubmit={props.onAddAssignment} className="grid grid-3">
+          <label>
+            Позиция
+            <select
+              value={props.selectedItemId}
+              disabled={locked}
+              onChange={(event) =>
+                props.onSetSelectedItemId(event.target.value)
+              }
+            >
+              <option value="">Выберите позицию</option>
+              {props.items.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Участник
+            <select
+              value={props.selectedParticipantId}
+              disabled={locked}
+              onChange={(event) =>
+                props.onSetSelectedParticipantId(event.target.value)
+              }
+            >
+              <option value="">Выберите участника</option>
+              {props.participants.map((participant) => (
+                <option key={participant.id} value={participant.id}>
+                  {participant.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Вес
+            <input
+              type="number"
+              min="1"
+              max="1000"
+              step="1"
+              value={props.adminWeight}
+              disabled={locked}
+              onChange={(event) => props.onSetAdminWeight(event.target.value)}
+            />
+          </label>
+          <button disabled={props.loading || locked}>
+            Сохранить назначение
+          </button>
+        </form>
+
+        <p className="muted">
+          Вес 2 означает вдвое большую долю общего блюда относительно веса 1.
+        </p>
+
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Позиция</th>
+                <th>Участник</th>
+                <th>Вес</th>
+                <th>Действие</th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.assignmentRows.map((assignment) => (
+                <tr key={`${assignment.item_id}:${assignment.participant_id}`}>
+                  <td>{assignment.itemName}</td>
+                  <td>{assignment.participantName}</td>
+                  <td>{assignment.weight}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={locked}
+                      onClick={() => props.onDeleteAssignment(assignment)}
+                    >
+                      Снять
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="section-title-row">
+          <div>
+            <p className="eyebrow">Проверка</p>
+            <h2>Расчёт и долги</h2>
           </div>
-
-          <form onSubmit={handleUpdateCharges} className="grid grid-5">
-            <label>
-              Итог на чеке
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={expectedTotal}
-                onChange={(event) => setExpectedTotal(event.target.value)}
-              />
-            </label>
-
-            <label>
-              Сервисный сбор
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={serviceFee}
-                onChange={(event) => setServiceFee(event.target.value)}
-              />
-            </label>
-
-            <label>
-              Чаевые
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={tipAmount}
-                onChange={(event) => setTipAmount(event.target.value)}
-              />
-            </label>
-
-            <label>
-              Скидка
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={discount}
-                onChange={(event) => setDiscount(event.target.value)}
-              />
-            </label>
-
-            <label>
-              Кто оплатил чек
-              <select
-                value={payerParticipantId}
-                onChange={(event) => setPayerParticipantId(event.target.value)}
-              >
-                <option value="">Не выбран</option>
-                {participants.map((participant) => (
-                  <option key={participant.id} value={participant.id}>
-                    {participant.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button disabled={loading}>Сохранить настройки</button>
-          </form>
-        </section>
-
-        <section className="card">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Люди в комнате</p>
-              <h2>Участники</h2>
-            </div>
-            <span className="count-badge">{participants.length}</span>
-          </div>
-
-          <form onSubmit={handleAddParticipant} className="grid grid-2">
-            <label>
-              Имя участника
-              <input
-                value={participantName}
-                onChange={(event) => setParticipantName(event.target.value)}
-                placeholder="Аня"
-                maxLength={80}
-              />
-            </label>
-
-            <button disabled={loading || !participantName.trim()}>
-              Добавить заранее
+          <div className="actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={props.loading}
+              onClick={props.onCalculate}
+            >
+              Предварительный расчёт
             </button>
-          </form>
-
-          {participants.length === 0 ? (
-            <p className="muted empty-state">
-              Участники могут появиться сами, когда откроют ссылку и введут имя.
-            </p>
-          ) : (
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Имя</th>
-                    <th>Статус</th>
-                    <th>Роль в счёте</th>
-                    <th>Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {participants.map((participant) => (
-                    <tr key={participant.id}>
-                      <td>{participant.name}</td>
-                      <td>
-                        <span
-                          className={
-                            participant.claimed
-                              ? "status-pill success-pill"
-                              : "status-pill"
-                          }
-                        >
-                          {participant.claimed ? "Вошёл" : "Ожидает входа"}
-                        </span>
-                      </td>
-                      <td>
-                        {room.payer_participant_id === participant.id
-                          ? "Оплатил чек"
-                          : "Участник"}
-                      </td>
-                      <td>
-                        <div className="actions">
-                          <button
-                            type="button"
-                            className="secondary"
-                            disabled={loading}
-                            onClick={() => handleEditParticipant(participant)}
-                          >
-                            Изменить
-                          </button>
-                          <button
-                            type="button"
-                            className="danger"
-                            disabled={loading}
-                            onClick={() => handleDeleteParticipant(participant)}
-                          >
-                            Удалить
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        <section className="card">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Содержимое чека</p>
-              <h2>Позиции</h2>
-            </div>
-            <span className="count-badge">{items.length}</span>
-          </div>
-
-          <form onSubmit={handleAddItem} className="grid grid-3">
-            <label>
-              Название
-              <input
-                value={itemName}
-                onChange={(event) => setItemName(event.target.value)}
-                placeholder="Пицца"
-                maxLength={160}
-              />
-            </label>
-
-            <label>
-              Количество
-              <input
-                type="number"
-                min="1"
-                step="1"
-                value={itemQuantity}
-                onChange={(event) => setItemQuantity(event.target.value)}
-              />
-            </label>
-
-            <label>
-              Цена за штуку
-              <input
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={itemPrice}
-                onChange={(event) => setItemPrice(event.target.value)}
-                placeholder="12.50"
-              />
-            </label>
-
-            <button disabled={loading || !itemName.trim()}>
-              Добавить позицию
-            </button>
-          </form>
-
-          {items.length === 0 ? (
-            <p className="muted empty-state">
-              Добавьте позиции из бумажного чека.
-            </p>
-          ) : (
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Название</th>
-                    <th>Кол-во</th>
-                    <th>Цена</th>
-                    <th>Итого</th>
-                    <th>Выбрали</th>
-                    <th>Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((item) => {
-                    const selectedCount = assignments.filter(
-                      (assignment) => assignment.item_id === item.id,
-                    ).length;
-
-                    return (
-                      <tr key={item.id}>
-                        <td>{item.name}</td>
-                        <td>{item.quantity}</td>
-                        <td>{formatMoney(item.unit_price, room.currency)}</td>
-                        <td>{formatMoney(item.total, room.currency)}</td>
-                        <td>
-                          {selectedCount > 0 ? (
-                            <span className="status-pill success-pill">
-                              {selectedCount}
-                            </span>
-                          ) : (
-                            <span className="status-pill warning-pill">
-                              Никто
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <div className="actions">
-                            <button
-                              type="button"
-                              className="secondary"
-                              disabled={loading}
-                              onClick={() => handleEditItem(item)}
-                            >
-                              Изменить
-                            </button>
-                            <button
-                              type="button"
-                              className="danger"
-                              disabled={loading}
-                              onClick={() => handleDeleteItem(item)}
-                            >
-                              Удалить
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        <section className="card">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Ручная корректировка</p>
-              <h2>Распределение</h2>
-            </div>
-            {unassignedItems.length > 0 && (
-              <span className="status-pill warning-pill">
-                Не распределено: {unassignedItems.length}
-              </span>
+            {props.calculation && (
+              <button type="button" onClick={props.onCopySummary}>
+                Копировать итог
+              </button>
             )}
           </div>
+        </div>
 
-          <form onSubmit={handleAddAssignment} className="grid grid-3">
-            <label>
-              Позиция
-              <select
-                value={selectedItemId}
-                onChange={(event) => setSelectedItemId(event.target.value)}
-              >
-                <option value="">Выберите позицию</option>
-                {items.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} — {formatMoney(item.total, room.currency)}
-                  </option>
-                ))}
-              </select>
-            </label>
+        {props.calculation ? (
+          <CalculationResult
+            calculation={props.calculation}
+            room={props.room}
+          />
+        ) : (
+          <p className="muted">
+            Расчёт доступен, когда каждая позиция назначена хотя бы одному
+            участнику.
+          </p>
+        )}
+      </section>
+    </>
+  );
+}
 
-            <label>
-              Участник
-              <select
-                value={selectedParticipantId}
-                onChange={(event) =>
-                  setSelectedParticipantId(event.target.value)
-                }
-              >
-                <option value="">Выберите участника</option>
-                {participants.map((participant) => (
-                  <option key={participant.id} value={participant.id}>
-                    {participant.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+type ParticipantViewProps = {
+  room: Room;
+  participants: Participant[];
+  items: ReceiptItem[];
+  assignments: ItemAssignment[];
+  participantSession: ParticipantSession | null;
+  participantPreview: ReturnType<typeof calculateParticipantPreview> | null;
+  participantWeights: WeightDrafts;
+  calculation: CalculateResponse | null;
+  joinName: string;
+  loading: boolean;
+  selectionLoadingId: string;
+  payerName: string;
+  onSetJoinName: (value: string) => void;
+  onJoin: (event: SubmitEvent<HTMLFormElement>) => void;
+  onToggleSelection: (item: ReceiptItem) => void;
+  onWeightChange: (itemId: string, value: string) => void;
+  onSaveWeight: (item: ReceiptItem, value: string) => void;
+  onLeave: () => void;
+  onRefresh: () => void;
+};
 
+function ParticipantView(props: ParticipantViewProps) {
+  if (!props.participantSession) {
+    return (
+      <section className="card join-card">
+        <p className="eyebrow">Вход в комнату</p>
+        <h2>Как вас зовут?</h2>
+        {props.room.status === "finalized" ? (
+          <p>Распределение уже завершено. Войти новым участником нельзя.</p>
+        ) : (
+          <form onSubmit={props.onJoin} className="grid grid-2">
             <label>
-              Вес доли
+              Имя
               <input
-                type="number"
-                min="1"
-                step="1"
-                value={weight}
-                onChange={(event) => setWeight(event.target.value)}
+                value={props.joinName}
+                onChange={(event) => props.onSetJoinName(event.target.value)}
               />
             </label>
-
-            <button
-              disabled={loading || !selectedItemId || !selectedParticipantId}
-            >
-              Назначить вручную
+            <button disabled={props.loading || !props.joinName.trim()}>
+              Войти
             </button>
           </form>
+        )}
+      </section>
+    );
+  }
 
-          {assignmentRows.length === 0 ? (
-            <p className="muted empty-state">Пока никто не отметил блюда.</p>
-          ) : (
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Позиция</th>
-                    <th>Участник</th>
-                    <th>Вес</th>
-                    <th>Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {assignmentRows.map((assignment) => (
-                    <tr
-                      key={`${assignment.item_id}:${assignment.participant_id}`}
-                    >
-                      <td>{assignment.itemName}</td>
-                      <td>{assignment.participantName}</td>
-                      <td>{assignment.weight}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="danger"
-                          disabled={loading}
-                          onClick={() => handleDeleteAssignment(assignment)}
-                        >
-                          Снять
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
+  if (props.room.status === "finalized") {
+    return (
+      <>
         <section className="card">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Проверка результата</p>
-              <h2>Предварительный итог</h2>
-            </div>
-            <button type="button" onClick={handleCalculate} disabled={loading}>
-              Рассчитать
-            </button>
-          </div>
-
-          {unassignedItems.length > 0 && (
-            <p className="warning-box">
-              Сначала распределите все позиции:{" "}
-              {unassignedItems.map((item) => item.name).join(", ")}.
-            </p>
-          )}
-
-          {calculation && (
-            <CalculationTable
-              calculation={calculation}
-              room={room}
-              payerName={payer?.name ?? ""}
+          <p className="eyebrow">Распределение завершено</p>
+          <h2>Финальный результат</h2>
+          {props.calculation ? (
+            <CalculationResult
+              calculation={props.calculation}
+              room={props.room}
+              focusParticipantId={props.participantSession.participantId}
             />
+          ) : (
+            <p>Загрузка результата...</p>
           )}
         </section>
-      </main>
+        <ParticipantFooter
+          onRefresh={props.onRefresh}
+          onLeave={props.onLeave}
+        />
+      </>
+    );
+  }
+
+  if (props.room.status === "draft") {
+    return (
+      <>
+        <section className="card waiting-card">
+          <p className="eyebrow">Вы вошли как</p>
+          <h2>{props.participantSession.name}</h2>
+          <p>
+            Организатор ещё заполняет чек. Выбор блюд станет доступен после
+            открытия распределения.
+          </p>
+        </section>
+        <ParticipantFooter
+          onRefresh={props.onRefresh}
+          onLeave={props.onLeave}
+        />
+      </>
     );
   }
 
   return (
-    <main className="participant-page">
-      <RoomHeader
-        room={room}
-        role={participantSession ? "Участник" : "Гостевая ссылка"}
-        lastUpdatedAt={lastUpdatedAt}
-      />
+    <>
+      <section className="card participant-intro">
+        <div>
+          <p className="eyebrow">Вы вошли как</p>
+          <h2>{props.participantSession.name}</h2>
+        </div>
+        {props.payerName && <p>Чек оплатил: {props.payerName}</p>}
+      </section>
 
-      {error && <p className="error notice">{error}</p>}
+      <section className="item-grid">
+        {props.items.map((item) => {
+          const itemAssignments = props.assignments.filter(
+            (assignment) => assignment.item_id === item.id,
+          );
+          const ownAssignment = itemAssignments.find(
+            (assignment) =>
+              assignment.participant_id ===
+              props.participantSession?.participantId,
+          );
+          const selectedNames = itemAssignments
+            .map((assignment) => {
+              const participant = props.participants.find(
+                (value) => value.id === assignment.participant_id,
+              );
+              return participant
+                ? `${participant.name} (${assignment.weight})`
+                : null;
+            })
+            .filter((name): name is string => Boolean(name));
 
-      {!participantSession ? (
-        <section className="card join-card">
-          <p className="eyebrow">Присоединиться к счёту</p>
-          <h2>Как вас зовут?</h2>
-          <p className="muted">
-            Если организатор уже добавил ваше имя, введите его так же. Иначе
-            будет создан новый участник.
-          </p>
-
-          <form onSubmit={handleJoin} className="grid">
-            <label>
-              Имя
-              <input
-                autoFocus
-                value={joinName}
-                onChange={(event) => setJoinName(event.target.value)}
-                placeholder="Аня"
-                maxLength={80}
-              />
-            </label>
-
-            <button disabled={loading || !joinName.trim()}>
-              {loading ? "Входим..." : "Войти в комнату"}
-            </button>
-          </form>
-        </section>
-      ) : (
-        <>
-          <section className="participant-summary">
-            <div>
-              <p className="eyebrow">Вы вошли как</p>
-              <h2>{currentParticipant?.name ?? participantSession.name}</h2>
-              <p className="muted">
-                Нажмите на все позиции, которые относятся к вам. Общие блюда
-                можно отметить нескольким людям.
-              </p>
-            </div>
-
-            <div className="amount-panel">
-              <span>Предварительно</span>
-              <strong>
-                {formatMoney(
-                  participantPreview?.totalAmount ?? 0,
-                  room.currency,
-                )}
-              </strong>
-              {payer && <small>Плательщик: {payer.name}</small>}
-            </div>
-          </section>
-
-          {items.length === 0 ? (
-            <section className="card empty-state">
-              <h2>Чек пока пуст</h2>
-              <p className="muted">
-                Организатор ещё не добавил позиции. Страница обновляется
-                автоматически.
-              </p>
-            </section>
-          ) : (
-            <section className="item-grid">
-              {items.map((item) => {
-                const itemAssignments = assignments.filter(
-                  (assignment) => assignment.item_id === item.id,
-                );
-
-                const selected = itemAssignments.some(
-                  (assignment) =>
-                    assignment.participant_id ===
-                    participantSession.participantId,
-                );
-
-                const selectedNames = itemAssignments
-                  .map(
-                    (assignment) =>
-                      participants.find(
-                        (participant) =>
-                          participant.id === assignment.participant_id,
-                      )?.name,
-                  )
-                  .filter((name): name is string => Boolean(name));
-
-                return (
-                  <article
-                    key={item.id}
-                    className={`item-card ${
-                      selected ? "item-card-selected" : ""
-                    }`}
-                  >
-                    <div className="item-card-top">
-                      <div>
-                        <h3>{item.name}</h3>
-                        {item.quantity > 1 && (
-                          <p className="muted">
-                            {item.quantity} ×{" "}
-                            {formatMoney(item.unit_price, room.currency)}
-                          </p>
-                        )}
-                      </div>
-                      <strong>{formatMoney(item.total, room.currency)}</strong>
-                    </div>
-
-                    <div className="selected-by">
-                      {selectedNames.length > 0 ? (
-                        <>
-                          <span>Выбрали:</span>
-                          <p>{selectedNames.join(", ")}</p>
-                        </>
-                      ) : (
-                        <p className="muted">Пока никто не выбрал</p>
-                      )}
-                    </div>
-
-                    <button
-                      type="button"
-                      className={selected ? "selected-button" : ""}
-                      disabled={selectionLoadingId === item.id}
-                      onClick={() => handleToggleSelection(item)}
-                    >
-                      {selectionLoadingId === item.id
-                        ? "Сохраняем..."
-                        : selected
-                          ? "✓ Это моё — снять"
-                          : "Это моё"}
-                    </button>
-                  </article>
-                );
-              })}
-            </section>
-          )}
-
-          <section className="card participant-breakdown">
-            <div>
-              <p className="eyebrow">Текущая доля</p>
-              <h2>
-                {formatMoney(
-                  participantPreview?.totalAmount ?? 0,
-                  room.currency,
-                )}
-              </h2>
-            </div>
-
-            {participantPreview && (
-              <div className="breakdown-grid">
-                <span>
-                  Блюда
-                  <strong>
-                    {formatMoney(participantPreview.baseAmount, room.currency)}
-                  </strong>
-                </span>
-                <span>
-                  Сервис
-                  <strong>
-                    {formatMoney(
-                      participantPreview.serviceShare,
-                      room.currency,
-                    )}
-                  </strong>
-                </span>
-                <span>
-                  Чаевые
-                  <strong>
-                    {formatMoney(participantPreview.tipShare, room.currency)}
-                  </strong>
-                </span>
-                <span>
-                  Скидка
-                  <strong>
-                    −
-                    {formatMoney(
-                      participantPreview.discountShare,
-                      room.currency,
-                    )}
-                  </strong>
-                </span>
+          return (
+            <article
+              key={item.id}
+              className={`item-card ${
+                ownAssignment ? "item-card-selected" : ""
+              }`}
+            >
+              <div className="item-card-top">
+                <div>
+                  <h3>{item.name}</h3>
+                  {item.quantity > 1 && (
+                    <p className="muted">
+                      {item.quantity} ×{" "}
+                      {formatMoney(item.unit_price, props.room.currency)}
+                    </p>
+                  )}
+                </div>
+                <strong>{formatMoney(item.total, props.room.currency)}</strong>
               </div>
+
+              <div className="selected-by">
+                {selectedNames.length > 0 ? (
+                  <p>Выбрали: {selectedNames.join(", ")}</p>
+                ) : (
+                  <p className="muted">Пока никто не выбрал</p>
+                )}
+              </div>
+
+              {ownAssignment && (
+                <div className="weight-control">
+                  <label>
+                    Мой вес
+                    <input
+                      type="number"
+                      min="1"
+                      max="1000"
+                      step="1"
+                      value={
+                        props.participantWeights[item.id] ??
+                        String(ownAssignment.weight)
+                      }
+                      onChange={(event) =>
+                        props.onWeightChange(item.id, event.target.value)
+                      }
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={props.selectionLoadingId === item.id}
+                    onClick={() =>
+                      props.onSaveWeight(
+                        item,
+                        props.participantWeights[item.id] ?? "1",
+                      )
+                    }
+                  >
+                    Сохранить вес
+                  </button>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className={ownAssignment ? "selected-button" : ""}
+                disabled={props.selectionLoadingId === item.id}
+                onClick={() => props.onToggleSelection(item)}
+              >
+                {props.selectionLoadingId === item.id
+                  ? "Сохраняем..."
+                  : ownAssignment
+                    ? "✓ Это моё — снять"
+                    : "Это моё"}
+              </button>
+            </article>
+          );
+        })}
+      </section>
+
+      <section className="card participant-breakdown">
+        <div>
+          <p className="eyebrow">Текущая доля</p>
+          <h2>
+            {formatMoney(
+              props.participantPreview?.totalAmount ?? 0,
+              props.room.currency,
             )}
+          </h2>
+        </div>
 
-            <p className="muted">
-              Сумма предварительная: она может измениться, когда другие
-              участники отметят общие блюда.
-            </p>
-          </section>
-
-          <div className="participant-footer">
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => void loadRoomData(roomId, false)}
-            >
-              Обновить сейчас
-            </button>
-            <button
-              type="button"
-              className="link-button"
-              onClick={handleLeaveParticipantMode}
-            >
-              Выйти из участника
-            </button>
+        {props.participantPreview && (
+          <div className="breakdown-grid">
+            <BreakdownValue
+              label="Блюда"
+              value={props.participantPreview.baseAmount}
+              room={props.room}
+            />
+            <BreakdownValue
+              label="Сервис"
+              value={props.participantPreview.serviceShare}
+              room={props.room}
+            />
+            <BreakdownValue
+              label="Чаевые"
+              value={props.participantPreview.tipShare}
+              room={props.room}
+            />
+            <BreakdownValue
+              label="Скидка"
+              value={-props.participantPreview.discountShare}
+              room={props.room}
+            />
           </div>
-        </>
+        )}
+
+        <p className="muted">
+          Вес влияет только на деление конкретного общего блюда. Значение 2
+          означает вдвое большую долю относительно веса 1.
+        </p>
+      </section>
+
+      <ParticipantFooter onRefresh={props.onRefresh} onLeave={props.onLeave} />
+    </>
+  );
+}
+
+function StatusPanel({
+  room,
+  isAdmin,
+  loading,
+  unassignedCount,
+  onOpen,
+  onFinalize,
+  onReopen,
+}: {
+  room: Room;
+  isAdmin: boolean;
+  loading: boolean;
+  unassignedCount: number;
+  onOpen: () => void;
+  onFinalize: () => void;
+  onReopen: () => void;
+}) {
+  const labels = {
+    draft: "Подготовка чека",
+    claiming: "Участники выбирают блюда",
+    finalized: "Распределение завершено",
+  } as const;
+
+  return (
+    <section className="card status-panel">
+      <div>
+        <p className="eyebrow">Статус комнаты</p>
+        <h2>{labels[room.status]}</h2>
+        {unassignedCount > 0 && room.status !== "finalized" && (
+          <p className="status-warning">
+            Нераспределённых позиций: {unassignedCount}
+          </p>
+        )}
+      </div>
+
+      {isAdmin && (
+        <div className="actions">
+          {room.status === "draft" && (
+            <button disabled={loading} onClick={onOpen}>
+              Открыть распределение
+            </button>
+          )}
+          {room.status === "claiming" && (
+            <button
+              disabled={loading || unassignedCount > 0}
+              onClick={onFinalize}
+            >
+              Завершить распределение
+            </button>
+          )}
+          {room.status === "finalized" && (
+            <button className="secondary" disabled={loading} onClick={onReopen}>
+              Вернуть к редактированию
+            </button>
+          )}
+        </div>
       )}
-    </main>
+    </section>
+  );
+}
+
+function CalculationResult({
+  calculation,
+  room,
+  focusParticipantId,
+}: {
+  calculation: CalculateResponse;
+  room: Room;
+  focusParticipantId?: string;
+}) {
+  const visibleResults = focusParticipantId
+    ? calculation.results.filter(
+        (result) => result.participant_id === focusParticipantId,
+      )
+    : calculation.results;
+
+  const visibleDebts = focusParticipantId
+    ? calculation.debts.filter(
+        (debt) =>
+          debt.from_participant_id === focusParticipantId ||
+          debt.to_participant_id === focusParticipantId,
+      )
+    : calculation.debts;
+
+  return (
+    <>
+      <div className="summary-grid">
+        <p>
+          Позиции:{" "}
+          <strong>{formatMoney(calculation.subtotal, room.currency)}</strong>
+        </p>
+        <p>
+          Рассчитано:{" "}
+          <strong>
+            {formatMoney(calculation.calculated_total, room.currency)}
+          </strong>
+        </p>
+        {room.expected_total > 0 && (
+          <p>
+            На чеке:{" "}
+            <strong>{formatMoney(room.expected_total, room.currency)}</strong>
+          </p>
+        )}
+      </div>
+
+      {room.expected_total > 0 &&
+        (calculation.matches_expected_total ? (
+          <p className="success">Сумма совпадает с итогом на чеке.</p>
+        ) : (
+          <p className="error">
+            Расхождение: {formatMoney(calculation.difference, room.currency)}
+          </p>
+        ))}
+
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Участник</th>
+              <th>Позиции</th>
+              <th>Сервис</th>
+              <th>Чаевые</th>
+              <th>Скидка</th>
+              <th>Итого</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleResults.map((result) => (
+              <tr key={result.participant_id}>
+                <td>{result.name}</td>
+                <td>{formatMoney(result.base_amount, room.currency)}</td>
+                <td>{formatMoney(result.service_share, room.currency)}</td>
+                <td>{formatMoney(result.tip_share, room.currency)}</td>
+                <td>−{formatMoney(result.discount_share, room.currency)}</td>
+                <td>
+                  <strong>
+                    {formatMoney(result.total_amount, room.currency)}
+                  </strong>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="debt-list">
+        <h3>Кто кому должен</h3>
+        {visibleDebts.length === 0 ? (
+          <p className="muted">Переводы не требуются.</p>
+        ) : (
+          visibleDebts.map((debt) => (
+            <p key={`${debt.from_participant_id}:${debt.to_participant_id}`}>
+              <strong>{debt.from_name}</strong> должен(на){" "}
+              <strong>{debt.to_name}</strong>:{" "}
+              {formatMoney(debt.amount, room.currency)}
+            </p>
+          ))
+        )}
+      </div>
+    </>
   );
 }
 
@@ -1377,18 +1757,13 @@ function RoomHeader({
           Комната <code>{room.id}</code>
         </p>
       </div>
-
       <div className="live-indicator">
         <span />
         <div>
           <strong>Автообновление</strong>
           <small>
             {lastUpdatedAt
-              ? lastUpdatedAt.toLocaleTimeString("ru-RU", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })
+              ? lastUpdatedAt.toLocaleTimeString("ru-RU")
               : "загрузка"}
           </small>
         </div>
@@ -1397,81 +1772,81 @@ function RoomHeader({
   );
 }
 
-function CalculationTable({
-  calculation,
-  room,
-  payerName,
+function MoneyInput({
+  label,
+  value,
+  onChange,
+  disabled,
+  positive = false,
 }: {
-  calculation: CalculateResponse;
-  room: Room;
-  payerName: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+  positive?: boolean;
 }) {
   return (
-    <>
-      <div className="summary-grid">
-        <p>
-          Позиции:{" "}
-          <strong>{formatMoney(calculation.subtotal, room.currency)}</strong>
-        </p>
-        <p>
-          Рассчитано:{" "}
-          <strong>
-            {formatMoney(calculation.calculated_total, room.currency)}
-          </strong>
-        </p>
-        {room.expected_total > 0 && (
-          <p>
-            На чеке:{" "}
-            <strong>{formatMoney(room.expected_total, room.currency)}</strong>
-          </p>
-        )}
-        {payerName && (
-          <p>
-            Плательщик: <strong>{payerName}</strong>
-          </p>
-        )}
-      </div>
-
-      {room.expected_total > 0 &&
-        (calculation.matches_expected_total ? (
-          <p className="success">Сумма совпадает с итогом на чеке.</p>
-        ) : (
-          <p className="error">
-            Расхождение: {formatMoney(calculation.difference, room.currency)}.
-            Проверьте позиции, сборы, чаевые и скидку.
-          </p>
-        ))}
-
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Участник</th>
-              <th>Позиции</th>
-              <th>Сервис</th>
-              <th>Чаевые</th>
-              <th>Скидка</th>
-              <th>Итого</th>
-            </tr>
-          </thead>
-          <tbody>
-            {calculation.results.map((result) => (
-              <tr key={result.participant_id}>
-                <td>{result.name}</td>
-                <td>{formatMoney(result.base_amount, room.currency)}</td>
-                <td>{formatMoney(result.service_share, room.currency)}</td>
-                <td>{formatMoney(result.tip_share, room.currency)}</td>
-                <td>−{formatMoney(result.discount_share, room.currency)}</td>
-                <td>
-                  <strong>
-                    {formatMoney(result.total_amount, room.currency)}
-                  </strong>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+    <label>
+      {label}
+      <input
+        type="number"
+        min={positive ? "0.01" : "0"}
+        step="0.01"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   );
+}
+
+function BreakdownValue({
+  label,
+  value,
+  room,
+}: {
+  label: string;
+  value: number;
+  room: Room;
+}) {
+  return (
+    <span>
+      {label}
+      <strong>{formatMoney(value, room.currency)}</strong>
+    </span>
+  );
+}
+
+function ParticipantFooter({
+  onRefresh,
+  onLeave,
+}: {
+  onRefresh: () => void;
+  onLeave: () => void;
+}) {
+  return (
+    <div className="participant-footer">
+      <button type="button" className="secondary" onClick={onRefresh}>
+        Обновить сейчас
+      </button>
+      <button type="button" className="link-button" onClick={onLeave}>
+        Выйти из участника
+      </button>
+    </div>
+  );
+}
+
+function translateError(message: string): string {
+  const translations: Record<string, string> = {
+    "room is finalized": "Комната уже завершена и заблокирована.",
+    "room is not open for selections": "Организатор ещё не открыл выбор блюд.",
+    "all items must have at least one participant":
+      "Каждая позиция должна быть назначена хотя бы одному участнику.",
+    "payer is required before finalization":
+      "Перед завершением выберите человека, который оплатил чек.",
+    "calculated total does not match expected total":
+      "Рассчитанная сумма не совпадает с итогом на чеке.",
+  };
+
+  return translations[message] ?? message;
 }
