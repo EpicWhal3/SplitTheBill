@@ -6,7 +6,7 @@ type RoomStatus string
 
 const (
 	RoomStatusDraft     RoomStatus = "draft"
-	RoomStatusClaimed   RoomStatus = "claimed"
+	RoomStatusClaiming  RoomStatus = "claiming"
 	RoomStatusFinalized RoomStatus = "finalized"
 )
 
@@ -18,18 +18,18 @@ const (
 )
 
 type Room struct {
-	ID                 string     `json:"id"`
-	Title              string     `json:"title"`
-	Currency           string     `json:"currency"`
-	ServiceFee         int64      `json:"service_fee"`
-	TipAmount          int64      `json:"tip_amount"`
-	Discount           int64      `json:"discount"`
-	DiscountMode       string     `json:"discount_mode"`
-	ExpectedTotal      int64      `json:"expected_total"`
-	PayerParticipantID string     `json:"payer_participant_id"`
-	Status             string     `json:"status"`
-	FinalizedAt        *time.Time `json:"finalized_at"`
-	AdminToken         string     `json:"-"`
+	ID                 string       `json:"id"`
+	Title              string       `json:"title"`
+	Currency           string       `json:"currency"`
+	ServiceFee         int64        `json:"service_fee"`
+	TipAmount          int64        `json:"tip_amount"`
+	Discount           int64        `json:"discount"`
+	DiscountMode       DiscountMode `json:"discount_mode"`
+	ExpectedTotal      int64        `json:"expected_total"`
+	PayerParticipantID string       `json:"payer_participant_id"`
+	Status             RoomStatus   `json:"status"`
+	FinalizedAt        *time.Time   `json:"finalized_at"`
+	AdminToken         string       `json:"-"`
 }
 
 type Participant struct {

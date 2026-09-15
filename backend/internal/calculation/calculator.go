@@ -258,6 +258,10 @@ func splitProportionally(total int64, base map[string]int64) map[string]int64 {
 	return result
 }
 
+// splitEquallyWithCapacity distributes a discount equally among participants
+// who have a positive gross amount. If someone's remaining bill is smaller than
+// an equal share, that participant is capped at zero and the remainder is
+// redistributed among the others.
 func splitEquallyWithCapacity(total int64, capacity map[string]int64) map[string]int64 {
 	result := zeroShares(capacity)
 	if total == 0 {
@@ -348,7 +352,7 @@ func distributeRemainder(
 		return remainders[i].Value > remainders[j].Value
 	})
 
-	for i := range left {
+	for i := int64(0); i < left; i++ {
 		index := i % int64(len(remainders))
 		result[remainders[index].ParticipantID]++
 	}

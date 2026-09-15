@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"splitthebill/backend/internal/domain"
@@ -44,6 +45,12 @@ func (s *PostgresStore) CreateRoom(
 	if room.AdminToken == "" {
 		room.AdminToken = newToken()
 	}
+	if room.DiscountMode == "" {
+		room.DiscountMode = domain.DiscountModeProportional
+	}
+	if room.Status == "" {
+		room.Status = domain.RoomStatusDraft
+	}
 
 	query := `
 		INSERT INTO rooms (
@@ -53,11 +60,14 @@ func (s *PostgresStore) CreateRoom(
 			service_fee,
 			tip_amount,
 			discount,
+			discount_mode,
 			expected_total,
 			payer_participant_id,
+			status,
+			finalized_at,
 			admin_token
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11, $12)
 	`
 
 	_, err := s.db.Exec(
@@ -69,8 +79,11 @@ func (s *PostgresStore) CreateRoom(
 		room.ServiceFee,
 		room.TipAmount,
 		room.Discount,
+		room.DiscountMode,
 		room.ExpectedTotal,
 		room.PayerParticipantID,
+		room.Status,
+		room.FinalizedAt,
 		room.AdminToken,
 	)
 	if err != nil {
@@ -93,14 +106,18 @@ func (s *PostgresStore) GetRoom(
 			service_fee,
 			tip_amount,
 			discount,
+			discount_mode,
 			expected_total,
 			COALESCE(payer_participant_id, ''),
+			status,
+			finalized_at,
 			admin_token
 		FROM rooms
 		WHERE id = $1
 	`
 
 	var room domain.Room
+	var finalizedAt sql.NullTime
 
 	err := s.db.QueryRow(
 		ctx,
@@ -113,17 +130,22 @@ func (s *PostgresStore) GetRoom(
 		&room.ServiceFee,
 		&room.TipAmount,
 		&room.Discount,
+		&room.DiscountMode,
 		&room.ExpectedTotal,
 		&room.PayerParticipantID,
+		&room.Status,
+		&finalizedAt,
 		&room.AdminToken,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Room{}, ErrorNotFound
 	}
-
 	if err != nil {
 		return domain.Room{}, err
+	}
+	if finalizedAt.Valid {
+		room.FinalizedAt = &finalizedAt.Time
 	}
 
 	return room, nil
@@ -141,8 +163,11 @@ func (s *PostgresStore) UpdateRoom(
 			service_fee = $4,
 			tip_amount = $5,
 			discount = $6,
-			expected_total = $7,
-			payer_participant_id = NULLIF($8, ''),
+			discount_mode = $7,
+			expected_total = $8,
+			payer_participant_id = NULLIF($9, ''),
+			status = $10,
+			finalized_at = $11,
 			updated_at = now()
 		WHERE id = $1
 	`
@@ -156,13 +181,15 @@ func (s *PostgresStore) UpdateRoom(
 		room.ServiceFee,
 		room.TipAmount,
 		room.Discount,
+		room.DiscountMode,
 		room.ExpectedTotal,
 		room.PayerParticipantID,
+		room.Status,
+		room.FinalizedAt,
 	)
 	if err != nil {
 		return domain.Room{}, err
 	}
-
 	if commandTag.RowsAffected() == 0 {
 		return domain.Room{}, ErrorNotFound
 	}

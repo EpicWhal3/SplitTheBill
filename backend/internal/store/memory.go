@@ -1,9 +1,10 @@
 package store
 
 import (
-	"splitthebill/backend/internal/domain"
 	"strings"
 	"sync"
+
+	"splitthebill/backend/internal/domain"
 )
 
 type MemoryStore struct {
@@ -32,11 +33,18 @@ func (s *MemoryStore) CreateRoom(room domain.Room) (domain.Room, error) {
 	if room.AdminToken == "" {
 		room.AdminToken = newToken()
 	}
+	if room.DiscountMode == "" {
+		room.DiscountMode = domain.DiscountModeProportional
+	}
+	if room.Status == "" {
+		room.Status = domain.RoomStatusDraft
+	}
 
 	s.rooms[room.ID] = room
 	s.participants[room.ID] = []domain.Participant{}
 	s.items[room.ID] = []domain.ReceiptItem{}
 	s.assignments[room.ID] = []domain.ItemAssignment{}
+
 	return room, nil
 }
 
@@ -60,9 +68,11 @@ func (s *MemoryStore) UpdateRoom(room domain.Room) (domain.Room, error) {
 	if !ok {
 		return domain.Room{}, ErrorNotFound
 	}
+
 	if room.AdminToken == "" {
 		room.AdminToken = existing.AdminToken
 	}
+
 	s.rooms[room.ID] = room
 	return room, nil
 }
@@ -94,7 +104,10 @@ func (s *MemoryStore) AddParticipant(
 	return participant, nil
 }
 
-func (s *MemoryStore) JoinParticipant(roomID string, name string) (domain.Participant, error) {
+func (s *MemoryStore) JoinParticipant(
+	roomID string,
+	name string,
+) (domain.Participant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -103,8 +116,12 @@ func (s *MemoryStore) JoinParticipant(roomID string, name string) (domain.Partic
 	}
 
 	participants := s.participants[roomID]
+
 	for i, participant := range participants {
-		if !strings.EqualFold(strings.TrimSpace(participant.Name), strings.TrimSpace(name)) {
+		if !strings.EqualFold(
+			strings.TrimSpace(participant.Name),
+			strings.TrimSpace(name),
+		) {
 			continue
 		}
 
@@ -128,7 +145,11 @@ func (s *MemoryStore) JoinParticipant(roomID string, name string) (domain.Partic
 		AccessToken: newToken(),
 	}
 
-	s.participants[roomID] = append(s.participants[roomID], participant)
+	s.participants[roomID] = append(
+		s.participants[roomID],
+		participant,
+	)
+
 	return participant, nil
 }
 
@@ -161,6 +182,7 @@ func (s *MemoryStore) ListParticipants(
 	if _, ok := s.rooms[roomID]; !ok {
 		return nil, ErrorNotFound
 	}
+
 	return append(
 		[]domain.Participant(nil),
 		s.participants[roomID]...,
@@ -281,7 +303,6 @@ func (s *MemoryStore) AddItem(
 
 	item.ID = newID()
 	item.RoomID = roomID
-
 	s.items[roomID] = append(s.items[roomID], item)
 
 	return item, nil
@@ -364,7 +385,6 @@ func (s *MemoryStore) DeleteItem(
 	s.items[roomID] = filteredItems
 
 	assignments := s.assignments[roomID]
-
 	filteredAssignments := make(
 		[]domain.ItemAssignment,
 		0,
@@ -381,7 +401,6 @@ func (s *MemoryStore) DeleteItem(
 	}
 
 	s.assignments[roomID] = filteredAssignments
-
 	return nil
 }
 
@@ -456,7 +475,6 @@ func (s *MemoryStore) DeleteAssignment(
 
 	assignments := s.assignments[roomID]
 	found := false
-
 	filtered := make(
 		[]domain.ItemAssignment,
 		0,
@@ -478,21 +496,7 @@ func (s *MemoryStore) DeleteAssignment(
 	}
 
 	s.assignments[roomID] = filtered
-
 	return nil
-}
-
-func (s *MemoryStore) itemExists(
-	roomID string,
-	itemID string,
-) bool {
-	for _, item := range s.items[roomID] {
-		if item.ID == itemID {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (s *MemoryStore) participantNameExists(
@@ -509,6 +513,19 @@ func (s *MemoryStore) participantNameExists(
 			strings.TrimSpace(participant.Name),
 			strings.TrimSpace(name),
 		) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *MemoryStore) itemExists(
+	roomID string,
+	itemID string,
+) bool {
+	for _, item := range s.items[roomID] {
+		if item.ID == itemID {
 			return true
 		}
 	}

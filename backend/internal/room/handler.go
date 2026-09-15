@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"time"
 	"unicode/utf8"
 
 	"splitthebill/backend/internal/calculation"
@@ -19,6 +21,7 @@ const (
 	maxTitleLength       = 120
 	maxParticipantLength = 80
 	maxItemNameLength    = 160
+	maxAssignmentWeight  = 1000
 )
 
 type Handler struct {
@@ -89,6 +92,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.calculate(w, roomID)
 				return
 			}
+		case "open":
+			if r.Method == http.MethodPost {
+				h.openClaiming(w, r, roomID)
+				return
+			}
+		case "finalize":
+			if r.Method == http.MethodPost {
+				h.finalize(w, r, roomID)
+				return
+			}
+		case "reopen":
+			if r.Method == http.MethodPost {
+				h.reopen(w, r, roomID)
+				return
+			}
 		default:
 			writeError(w, http.StatusNotFound, "route not found")
 			return
@@ -151,13 +169,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type createRoomRequest struct {
-	Title             string `json:"title"`
-	Currency          string `json:"currency"`
-	ServiceFee        int64  `json:"service_fee"`
-	TipAmount         int64  `json:"tip_amount"`
-	Discount          int64  `json:"discount"`
-	ExpectedTotal     int64  `json:"expected_total"`
-	LegacyTotalAmount *int64 `json:"total_amount"`
+	Title         string `json:"title"`
+	Currency      string `json:"currency"`
+	ServiceFee    int64  `json:"service_fee"`
+	TipAmount     int64  `json:"tip_amount"`
+	Discount      int64  `json:"discount"`
+	DiscountMode  string `json:"discount_mode"`
+	ExpectedTotal int64  `json:"expected_total"`
 }
 
 func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
@@ -175,8 +193,9 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		req.Currency = "EUR"
 	}
 
-	if req.ExpectedTotal == 0 && req.LegacyTotalAmount != nil {
-		req.ExpectedTotal = *req.LegacyTotalAmount
+	discountMode := domain.DiscountMode(strings.TrimSpace(req.DiscountMode))
+	if discountMode == "" {
+		discountMode = domain.DiscountModeProportional
 	}
 
 	if err := validateTitle(req.Title); err != nil {
@@ -188,24 +207,24 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	if err := validateCharges(
-		req.ServiceFee,
-		req.TipAmount,
-		req.Discount,
-		req.ExpectedTotal,
-	); err != nil {
+	if err := validateCharges(req.ServiceFee, req.TipAmount, req.Discount, req.ExpectedTotal); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateDiscountMode(discountMode); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	createdRoom, err := h.store.CreateRoom(domain.Room{
+	created, err := h.store.CreateRoom(domain.Room{
 		Title:         req.Title,
 		Currency:      req.Currency,
 		ServiceFee:    req.ServiceFee,
 		TipAmount:     req.TipAmount,
 		Discount:      req.Discount,
+		DiscountMode:  discountMode,
 		ExpectedTotal: req.ExpectedTotal,
+		Status:        domain.RoomStatusDraft,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create room")
@@ -213,8 +232,8 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"room":        createdRoom,
-		"admin_token": createdRoom.AdminToken,
+		"room":        created,
+		"admin_token": created.AdminToken,
 	})
 }
 
@@ -224,14 +243,17 @@ type updateRoomRequest struct {
 	ServiceFee         *int64  `json:"service_fee"`
 	TipAmount          *int64  `json:"tip_amount"`
 	Discount           *int64  `json:"discount"`
+	DiscountMode       *string `json:"discount_mode"`
 	ExpectedTotal      *int64  `json:"expected_total"`
-	LegacyTotalAmount  *int64  `json:"total_amount"`
 	PayerParticipantID *string `json:"payer_participant_id"`
 }
 
 func (h *Handler) updateRoom(w http.ResponseWriter, r *http.Request, roomID string) {
 	room, ok := h.authorizeAdmin(w, r, roomID)
 	if !ok {
+		return
+	}
+	if !ensureMutable(w, room) {
 		return
 	}
 
@@ -256,10 +278,11 @@ func (h *Handler) updateRoom(w http.ResponseWriter, r *http.Request, roomID stri
 	if req.Discount != nil {
 		room.Discount = *req.Discount
 	}
+	if req.DiscountMode != nil {
+		room.DiscountMode = domain.DiscountMode(strings.TrimSpace(*req.DiscountMode))
+	}
 	if req.ExpectedTotal != nil {
 		room.ExpectedTotal = *req.ExpectedTotal
-	} else if req.LegacyTotalAmount != nil {
-		room.ExpectedTotal = *req.LegacyTotalAmount
 	}
 	if req.PayerParticipantID != nil {
 		room.PayerParticipantID = strings.TrimSpace(*req.PayerParticipantID)
@@ -273,16 +296,14 @@ func (h *Handler) updateRoom(w http.ResponseWriter, r *http.Request, roomID stri
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateCharges(
-		room.ServiceFee,
-		room.TipAmount,
-		room.Discount,
-		room.ExpectedTotal,
-	); err != nil {
+	if err := validateCharges(room.ServiceFee, room.TipAmount, room.Discount, room.ExpectedTotal); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
+	if err := validateDiscountMode(domain.DiscountMode(room.DiscountMode)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if room.PayerParticipantID != "" {
 		if _, err := h.findParticipant(roomID, room.PayerParticipantID); err != nil {
 			writeError(w, http.StatusBadRequest, "payer must be a participant of this room")
@@ -290,13 +311,12 @@ func (h *Handler) updateRoom(w http.ResponseWriter, r *http.Request, roomID stri
 		}
 	}
 
-	updatedRoom, err := h.store.UpdateRoom(room)
+	updated, err := h.store.UpdateRoom(room)
 	if err != nil {
 		writeStoreError(w, err, "room not found")
 		return
 	}
-
-	writeJSON(w, http.StatusOK, updatedRoom)
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *Handler) getRoom(w http.ResponseWriter, roomID string) {
@@ -305,19 +325,16 @@ func (h *Handler) getRoom(w http.ResponseWriter, roomID string) {
 		writeStoreError(w, err, "room not found")
 		return
 	}
-
 	participants, err := h.store.ListParticipants(roomID)
 	if err != nil {
 		writeStoreError(w, err, "room not found")
 		return
 	}
-
 	items, err := h.store.ListItems(roomID)
 	if err != nil {
 		writeStoreError(w, err, "room not found")
 		return
 	}
-
 	assignments, err := h.store.ListAssignments(roomID)
 	if err != nil {
 		writeStoreError(w, err, "room not found")
@@ -325,11 +342,12 @@ func (h *Handler) getRoom(w http.ResponseWriter, roomID string) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"room":         room,
-		"participants": nonNilParticipants(participants),
-		"items":        nonNilItems(items),
-		"assignments":  nonNilAssignments(assignments),
-		"subtotal":     calculateSubtotal(items),
+		"room":                room,
+		"participants":        nonNilParticipants(participants),
+		"items":               nonNilItems(items),
+		"assignments":         nonNilAssignments(assignments),
+		"subtotal":            calculateSubtotal(items),
+		"unassigned_item_ids": unassignedItemIDs(items, assignments),
 	})
 }
 
@@ -338,7 +356,8 @@ type participantRequest struct {
 }
 
 func (h *Handler) addParticipant(w http.ResponseWriter, r *http.Request, roomID string) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
 
@@ -347,7 +366,6 @@ func (h *Handler) addParticipant(w http.ResponseWriter, r *http.Request, roomID 
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-
 	req.Name = strings.TrimSpace(req.Name)
 	if err := validateParticipantName(req.Name); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -359,17 +377,25 @@ func (h *Handler) addParticipant(w http.ResponseWriter, r *http.Request, roomID 
 		writeStoreError(w, err, "room not found")
 		return
 	}
-
 	writeJSON(w, http.StatusCreated, created)
 }
 
 func (h *Handler) joinParticipant(w http.ResponseWriter, r *http.Request, roomID string) {
+	room, err := h.store.GetRoom(roomID)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+	if room.Status == domain.RoomStatusFinalized {
+		writeError(w, http.StatusConflict, "room is finalized")
+		return
+	}
+
 	var req participantRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-
 	req.Name = strings.TrimSpace(req.Name)
 	if err := validateParticipantName(req.Name); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -381,20 +407,15 @@ func (h *Handler) joinParticipant(w http.ResponseWriter, r *http.Request, roomID
 		writeStoreError(w, err, "room not found")
 		return
 	}
-
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"participant":       participant,
 		"participant_token": participant.AccessToken,
 	})
 }
 
-func (h *Handler) updateParticipant(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-	participantID string,
-) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+func (h *Handler) updateParticipant(w http.ResponseWriter, r *http.Request, roomID, participantID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
 
@@ -403,7 +424,6 @@ func (h *Handler) updateParticipant(
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-
 	req.Name = strings.TrimSpace(req.Name)
 	if err := validateParticipantName(req.Name); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -422,25 +442,18 @@ func (h *Handler) updateParticipant(
 		writeStoreError(w, err, "participant not found")
 		return
 	}
-
 	writeJSON(w, http.StatusOK, updated)
 }
 
-func (h *Handler) deleteParticipant(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-	participantID string,
-) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+func (h *Handler) deleteParticipant(w http.ResponseWriter, r *http.Request, roomID, participantID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
-
 	if err := h.store.DeleteParticipant(roomID, participantID); err != nil {
 		writeStoreError(w, err, "participant not found")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -448,11 +461,11 @@ type addItemRequest struct {
 	Name      string `json:"name"`
 	Quantity  int    `json:"quantity"`
 	UnitPrice int64  `json:"unit_price"`
-	Total     int64  `json:"total"`
 }
 
 func (h *Handler) addItem(w http.ResponseWriter, r *http.Request, roomID string) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
 
@@ -461,12 +474,10 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request, roomID string)
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Quantity == 0 {
 		req.Quantity = 1
 	}
-
 	if err := validateItem(req.Name, req.Quantity, req.UnitPrice); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -482,7 +493,6 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request, roomID string)
 		writeStoreError(w, err, "room not found")
 		return
 	}
-
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -492,13 +502,9 @@ type updateItemRequest struct {
 	UnitPrice *int64  `json:"unit_price"`
 }
 
-func (h *Handler) updateItem(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-	itemID string,
-) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request, roomID, itemID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
 
@@ -513,7 +519,6 @@ func (h *Handler) updateItem(
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-
 	if req.Name != nil {
 		item.Name = strings.TrimSpace(*req.Name)
 	}
@@ -523,7 +528,6 @@ func (h *Handler) updateItem(
 	if req.UnitPrice != nil {
 		item.UnitPrice = *req.UnitPrice
 	}
-
 	if err := validateItem(item.Name, item.Quantity, item.UnitPrice); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -535,25 +539,18 @@ func (h *Handler) updateItem(
 		writeStoreError(w, err, "item not found")
 		return
 	}
-
 	writeJSON(w, http.StatusOK, updated)
 }
 
-func (h *Handler) deleteItem(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-	itemID string,
-) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+func (h *Handler) deleteItem(w http.ResponseWriter, r *http.Request, roomID, itemID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
-
 	if err := h.store.DeleteItem(roomID, itemID); err != nil {
 		writeStoreError(w, err, "item not found")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -564,7 +561,8 @@ type addAssignmentRequest struct {
 }
 
 func (h *Handler) addAssignment(w http.ResponseWriter, r *http.Request, roomID string) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
 
@@ -573,20 +571,15 @@ func (h *Handler) addAssignment(w http.ResponseWriter, r *http.Request, roomID s
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-
 	req.ItemID = strings.TrimSpace(req.ItemID)
 	req.ParticipantID = strings.TrimSpace(req.ParticipantID)
-
-	if req.ItemID == "" {
-		writeError(w, http.StatusBadRequest, "item_id is required")
+	if req.ItemID == "" || req.ParticipantID == "" {
+		writeError(w, http.StatusBadRequest, "item_id and participant_id are required")
 		return
 	}
-	if req.ParticipantID == "" {
-		writeError(w, http.StatusBadRequest, "participant_id is required")
+	if err := validateWeight(req.Weight); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if req.Weight <= 0 {
-		req.Weight = 1
 	}
 
 	created, err := h.store.AddAssignment(roomID, domain.ItemAssignment{
@@ -595,74 +588,172 @@ func (h *Handler) addAssignment(w http.ResponseWriter, r *http.Request, roomID s
 		Weight:        req.Weight,
 	})
 	if err != nil {
-		writeAssignmentError(w, err)
+		writeAssignmentStoreError(w, err)
 		return
 	}
-
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (h *Handler) deleteAssignment(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-	itemID string,
-	participantID string,
-) {
-	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+func (h *Handler) deleteAssignment(w http.ResponseWriter, r *http.Request, roomID, itemID, participantID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
 		return
 	}
-
 	if err := h.store.DeleteAssignment(roomID, itemID, participantID); err != nil {
 		writeStoreError(w, err, "assignment not found")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) selectItem(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-	itemID string,
-) {
-	participant, ok := h.authorizeParticipant(w, r, roomID)
-	if !ok {
-		return
-	}
-
-	assignment, err := h.store.AddAssignment(roomID, domain.ItemAssignment{
-		ItemID:        itemID,
-		ParticipantID: participant.ID,
-		Weight:        1,
-	})
-	if err != nil {
-		writeAssignmentError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, assignment)
+type selectionRequest struct {
+	Weight int64 `json:"weight"`
 }
 
-func (h *Handler) unselectItem(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-	itemID string,
-) {
+func (h *Handler) selectItem(w http.ResponseWriter, r *http.Request, roomID, itemID string) {
 	participant, ok := h.authorizeParticipant(w, r, roomID)
 	if !ok {
 		return
 	}
 
-	err := h.store.DeleteAssignment(roomID, itemID, participant.ID)
-	if err != nil && !errors.Is(err, store.ErrorNotFound) {
+	room, err := h.store.GetRoom(roomID)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+	if room.Status != domain.RoomStatusClaiming {
+		writeError(w, http.StatusConflict, "room is not open for selections")
+		return
+	}
+
+	req := selectionRequest{Weight: 1}
+	if err := readOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validateWeight(req.Weight); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	created, err := h.store.AddAssignment(roomID, domain.ItemAssignment{
+		ItemID:        itemID,
+		ParticipantID: participant.ID,
+		Weight:        req.Weight,
+	})
+	if err != nil {
+		writeAssignmentStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, created)
+}
+
+func (h *Handler) unselectItem(w http.ResponseWriter, r *http.Request, roomID, itemID string) {
+	participant, ok := h.authorizeParticipant(w, r, roomID)
+	if !ok {
+		return
+	}
+
+	room, err := h.store.GetRoom(roomID)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+	if room.Status != domain.RoomStatusClaiming {
+		writeError(w, http.StatusConflict, "room is not open for selections")
+		return
+	}
+	if err := h.store.DeleteAssignment(roomID, itemID, participant.ID); err != nil {
 		writeStoreError(w, err, "selection not found")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) openClaiming(w http.ResponseWriter, r *http.Request, roomID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok {
+		return
+	}
+	if room.Status == domain.RoomStatusFinalized {
+		writeError(w, http.StatusConflict, "room is finalized")
+		return
+	}
+
+	items, err := h.store.ListItems(roomID)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+	if len(items) == 0 {
+		writeError(w, http.StatusConflict, "add at least one item before opening selections")
+		return
+	}
+
+	room.Status = domain.RoomStatusClaiming
+	room.FinalizedAt = nil
+	updated, err := h.store.UpdateRoom(room)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *Handler) finalize(w http.ResponseWriter, r *http.Request, roomID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok {
+		return
+	}
+	if room.Status != domain.RoomStatusClaiming {
+		writeError(w, http.StatusConflict, "room must be open for selections before finalization")
+		return
+	}
+	if room.PayerParticipantID == "" {
+		writeError(w, http.StatusConflict, "payer is required before finalization")
+		return
+	}
+
+	response, err := h.buildCalculationResponse(roomID, room)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if room.ExpectedTotal > 0 && !response.MatchesExpectedTotal {
+		writeError(w, http.StatusConflict, "calculated total does not match expected total")
+		return
+	}
+
+	now := time.Now().UTC()
+	room.Status = domain.RoomStatusFinalized
+	room.FinalizedAt = &now
+	updated, err := h.store.UpdateRoom(room)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+	response.Room = updated
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) reopen(w http.ResponseWriter, r *http.Request, roomID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok {
+		return
+	}
+	if room.Status != domain.RoomStatusFinalized {
+		writeError(w, http.StatusConflict, "room is not finalized")
+		return
+	}
+
+	room.Status = domain.RoomStatusClaiming
+	room.FinalizedAt = nil
+	updated, err := h.store.UpdateRoom(room)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *Handler) calculate(w http.ResponseWriter, roomID string) {
@@ -672,20 +763,40 @@ func (h *Handler) calculate(w http.ResponseWriter, roomID string) {
 		return
 	}
 
+	response, err := h.buildCalculationResponse(roomID, room)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+type calculationResponse struct {
+	Room                 domain.Room                `json:"room"`
+	Results              []domain.ParticipantResult `json:"results"`
+	Debts                []domain.Debt              `json:"debts"`
+	Subtotal             int64                      `json:"subtotal"`
+	CalculatedTotal      int64                      `json:"calculated_total"`
+	Difference           int64                      `json:"difference"`
+	MatchesExpectedTotal bool                       `json:"matches_expected_total"`
+}
+
+func (h *Handler) buildCalculationResponse(roomID string, room domain.Room) (calculationResponse, error) {
 	participants, err := h.store.ListParticipants(roomID)
 	if err != nil {
-		writeStoreError(w, err, "room not found")
-		return
+		return calculationResponse{}, err
 	}
 	items, err := h.store.ListItems(roomID)
 	if err != nil {
-		writeStoreError(w, err, "room not found")
-		return
+		return calculationResponse{}, err
 	}
 	assignments, err := h.store.ListAssignments(roomID)
 	if err != nil {
-		writeStoreError(w, err, "room not found")
-		return
+		return calculationResponse{}, err
+	}
+
+	if unassigned := unassignedItemIDs(items, assignments); len(unassigned) > 0 {
+		return calculationResponse{}, errors.New("all items must have at least one participant")
 	}
 
 	results, err := calculation.Calculate(calculation.BillInput{
@@ -695,10 +806,10 @@ func (h *Handler) calculate(w http.ResponseWriter, roomID string) {
 		ServiceFee:   room.ServiceFee,
 		TipAmount:    room.TipAmount,
 		Discount:     room.Discount,
+		DiscountMode: room.DiscountMode,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return calculationResponse{}, err
 	}
 
 	var calculatedTotal int64
@@ -713,21 +824,26 @@ func (h *Handler) calculate(w http.ResponseWriter, roomID string) {
 		matchesExpected = difference == 0
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"room":                   room,
-		"results":                results,
-		"subtotal":               calculateSubtotal(items),
-		"calculated_total":       calculatedTotal,
-		"difference":             difference,
-		"matches_expected_total": matchesExpected,
-	})
+	debts := []domain.Debt{}
+	if room.PayerParticipantID != "" {
+		debts, err = calculation.BuildDebts(results, room.PayerParticipantID)
+		if err != nil {
+			return calculationResponse{}, err
+		}
+	}
+
+	return calculationResponse{
+		Room:                 room,
+		Results:              results,
+		Debts:                debts,
+		Subtotal:             calculateSubtotal(items),
+		CalculatedTotal:      calculatedTotal,
+		Difference:           difference,
+		MatchesExpectedTotal: matchesExpected,
+	}, nil
 }
 
-func (h *Handler) authorizeAdmin(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-) (domain.Room, bool) {
+func (h *Handler) authorizeAdmin(w http.ResponseWriter, r *http.Request, roomID string) (domain.Room, bool) {
 	room, err := h.store.GetRoom(roomID)
 	if err != nil {
 		writeStoreError(w, err, "room not found")
@@ -735,78 +851,82 @@ func (h *Handler) authorizeAdmin(
 	}
 
 	provided := strings.TrimSpace(r.Header.Get("X-Admin-Token"))
-	if provided == "" || !secureEqual(provided, room.AdminToken) {
-		writeError(w, http.StatusForbidden, "organizer access required")
+	if provided == "" || !tokensEqual(provided, room.AdminToken) {
+		writeError(w, http.StatusUnauthorized, "organizer access required")
 		return domain.Room{}, false
 	}
-
 	return room, true
 }
 
-func (h *Handler) authorizeParticipant(
-	w http.ResponseWriter,
-	r *http.Request,
-	roomID string,
-) (domain.Participant, bool) {
+func (h *Handler) authorizeParticipant(w http.ResponseWriter, r *http.Request, roomID string) (domain.Participant, bool) {
 	token := strings.TrimSpace(r.Header.Get("X-Participant-Token"))
 	if token == "" {
-		writeError(w, http.StatusUnauthorized, "participant access required")
+		writeError(w, http.StatusUnauthorized, "participant session is invalid")
 		return domain.Participant{}, false
 	}
 
 	participant, err := h.store.FindParticipantByToken(roomID, token)
 	if err != nil {
-		if errors.Is(err, store.ErrorParticipantNotFound) {
-			writeError(w, http.StatusUnauthorized, "participant session is invalid")
-			return domain.Participant{}, false
-		}
-
-		writeStoreError(w, err, "room not found")
+		writeError(w, http.StatusUnauthorized, "participant session is invalid")
 		return domain.Participant{}, false
 	}
-
 	return participant, true
 }
 
-func secureEqual(a string, b string) bool {
-	if len(a) != len(b) {
+func tokensEqual(left, right string) bool {
+	if len(left) != len(right) || left == "" {
 		return false
 	}
-
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }
 
-func (h *Handler) findItem(roomID string, itemID string) (domain.ReceiptItem, error) {
-	items, err := h.store.ListItems(roomID)
-	if err != nil {
-		return domain.ReceiptItem{}, err
+func ensureMutable(w http.ResponseWriter, room domain.Room) bool {
+	if room.Status == domain.RoomStatusFinalized {
+		writeError(w, http.StatusConflict, "room is finalized")
+		return false
 	}
-
-	for _, item := range items {
-		if item.ID == itemID {
-			return item, nil
-		}
-	}
-
-	return domain.ReceiptItem{}, store.ErrorItemNotFound
+	return true
 }
 
-func (h *Handler) findParticipant(
-	roomID string,
-	participantID string,
-) (domain.Participant, error) {
+func (h *Handler) findParticipant(roomID, participantID string) (domain.Participant, error) {
 	participants, err := h.store.ListParticipants(roomID)
 	if err != nil {
 		return domain.Participant{}, err
 	}
-
 	for _, participant := range participants {
 		if participant.ID == participantID {
 			return participant, nil
 		}
 	}
-
 	return domain.Participant{}, store.ErrorParticipantNotFound
+}
+
+func (h *Handler) findItem(roomID, itemID string) (domain.ReceiptItem, error) {
+	items, err := h.store.ListItems(roomID)
+	if err != nil {
+		return domain.ReceiptItem{}, err
+	}
+	for _, item := range items {
+		if item.ID == itemID {
+			return item, nil
+		}
+	}
+	return domain.ReceiptItem{}, store.ErrorItemNotFound
+}
+
+func unassignedItemIDs(items []domain.ReceiptItem, assignments []domain.ItemAssignment) []string {
+	assigned := make(map[string]bool, len(assignments))
+	for _, assignment := range assignments {
+		assigned[assignment.ItemID] = true
+	}
+
+	result := make([]string, 0)
+	for _, item := range items {
+		if !assigned[item.ID] {
+			result = append(result, item.ID)
+		}
+	}
+	return result
 }
 
 func validateTitle(value string) error {
@@ -831,16 +951,16 @@ func validateCurrency(value string) error {
 	return nil
 }
 
-func validateCharges(
-	serviceFee int64,
-	tipAmount int64,
-	discount int64,
-	expectedTotal int64,
-) error {
+func validateCharges(serviceFee, tipAmount, discount, expectedTotal int64) error {
 	if serviceFee < 0 || tipAmount < 0 || discount < 0 || expectedTotal < 0 {
-		return errors.New(
-			"service_fee, tip_amount, discount and expected_total must be non-negative",
-		)
+		return errors.New("service_fee, tip_amount, discount and expected_total must be non-negative")
+	}
+	return nil
+}
+
+func validateDiscountMode(value domain.DiscountMode) error {
+	if value != domain.DiscountModeProportional && value != domain.DiscountModeEqual {
+		return errors.New("discount_mode must be proportional or equal")
 	}
 	return nil
 }
@@ -867,6 +987,13 @@ func validateItem(name string, quantity int, unitPrice int64) error {
 	}
 	if unitPrice <= 0 {
 		return errors.New("unit_price must be positive")
+	}
+	return nil
+}
+
+func validateWeight(weight int64) error {
+	if weight <= 0 || weight > maxAssignmentWeight {
+		return errors.New("weight must be between 1 and 1000")
 	}
 	return nil
 }
@@ -903,15 +1030,30 @@ func nonNilAssignments(value []domain.ItemAssignment) []domain.ItemAssignment {
 func readJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
-
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return errors.New("body must contain a single json value")
 	}
+	return nil
+}
 
+func readOptionalJSON(r *http.Request, dst any) error {
+	if r.Body == nil {
+		return nil
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("body must contain a single json value")
+	}
 	return nil
 }
 
@@ -925,7 +1067,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-func writeAssignmentError(w http.ResponseWriter, err error) {
+func writeAssignmentStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrorNotFound):
 		writeError(w, http.StatusNotFound, "room not found")
@@ -941,7 +1083,7 @@ func writeAssignmentError(w http.ResponseWriter, err error) {
 func writeStoreError(w http.ResponseWriter, err error, notFoundMessage string) {
 	switch {
 	case errors.Is(err, store.ErrorNameTaken):
-		writeError(w, http.StatusConflict, "participant name is already in use")
+		writeError(w, http.StatusConflict, "participant name is already taken")
 	case errors.Is(err, store.ErrorNotFound),
 		errors.Is(err, store.ErrorItemNotFound),
 		errors.Is(err, store.ErrorParticipantNotFound):
