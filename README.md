@@ -142,8 +142,8 @@ npm run dev
 # Backend: тесты
 cd backend && go test ./...
 
-# Frontend: линтер и production-сборка
-cd web && npm run lint && npm run build
+# Frontend: тесты, линтер и production-сборка
+cd web && npm run test && npm run lint && npm run build
 ```
 
 Те же проверки выполняются в CI ([ `.github/workflows/ci.yml` ](.github/workflows/ci.yml)).
