@@ -33,6 +33,7 @@ import {
   updateParticipant,
   updateRoom,
 } from "../../../lib/api";
+import { translateError } from "../../../lib/errors";
 import { calculateParticipantPreview } from "../../../lib/local-calculation";
 import { formatMoney, tryParseMoneyToMinorUnits } from "../../../lib/money";
 import {
@@ -682,6 +683,14 @@ export default function RoomPage({ params }: Props) {
   }
 
   async function handleFinalize() {
+    if (
+      !window.confirm(
+        "Завершить распределение? После этого изменить позиции, участников и правила будет нельзя, пока вы не вернёте комнату к редактированию.",
+      )
+    ) {
+      return;
+    }
+
     setLoading(true);
     setError("");
     try {
@@ -700,6 +709,14 @@ export default function RoomPage({ params }: Props) {
   }
 
   async function handleReopen() {
+    if (
+      !window.confirm(
+        "Вернуть комнату к редактированию? Комната снова станет изменяемой, а участники смогут менять свой выбор.",
+      )
+    ) {
+      return;
+    }
+
     await runAdminMutation(() => reopenRoom(roomId, adminToken));
   }
 
@@ -723,6 +740,40 @@ export default function RoomPage({ params }: Props) {
 
     await navigator.clipboard.writeText(lines.join("\n"));
     setCopyState("Итог скопирован");
+    window.setTimeout(() => setCopyState(""), 2500);
+  }
+
+  async function handleCopyParticipantSummary() {
+    if (!room || !calculation || !participantSession) {
+      return;
+    }
+
+    const ownResult = calculation.results.find(
+      (result) => result.participant_id === participantSession.participantId,
+    );
+    const ownDebt = calculation.debts.find(
+      (debt) => debt.from_participant_id === participantSession.participantId,
+    );
+
+    const lines = [
+      `Комната: ${room.title}`,
+      `Участник: ${participantSession.name}`,
+      `Мой итог: ${formatMoney(ownResult?.total_amount ?? 0, room.currency)}`,
+    ];
+
+    if (ownDebt) {
+      lines.push(
+        `Я должен(на) ${ownDebt.to_name}: ${formatMoney(
+          ownDebt.amount,
+          room.currency,
+        )}`,
+      );
+    } else {
+      lines.push("Переводы не требуются.");
+    }
+
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setCopyState("Ваш итог скопирован");
     window.setTimeout(() => setCopyState(""), 2500);
   }
 
@@ -874,6 +925,7 @@ export default function RoomPage({ params }: Props) {
           payerName={payer?.name ?? ""}
           onSetJoinName={setJoinName}
           onJoin={handleJoin}
+          onCopyParticipantSummary={() => void handleCopyParticipantSummary()}
           onToggleSelection={(item) => void handleToggleSelection(item)}
           onWeightChange={(itemId, value) =>
             setParticipantWeights((current) => ({
@@ -1118,6 +1170,23 @@ function AdminView(props: AdminViewProps) {
         </div>
       </section>
 
+      {props.unassignedItemIds.length > 0 && !locked && (
+        <section className="card warning-box">
+          <h3>Есть нераспределённые позиции</h3>
+          <p>
+            Пока у этих позиций нет ни одного участника, завершить распределение
+            нельзя:
+          </p>
+          <ul className="unassigned-list">
+            {props.unassignedItemIds.map((itemId) => (
+              <li key={itemId}>
+                {props.items.find((item) => item.id === itemId)?.name ?? itemId}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="card">
         <h2>Позиции чека</h2>
         <form onSubmit={props.onAddItem} className="grid grid-3">
@@ -1348,6 +1417,7 @@ type ParticipantViewProps = {
   payerName: string;
   onSetJoinName: (value: string) => void;
   onJoin: (event: SubmitEvent<HTMLFormElement>) => void;
+  onCopyParticipantSummary: () => void;
   onToggleSelection: (item: ReceiptItem) => void;
   onWeightChange: (itemId: string, value: string) => void;
   onSaveWeight: (item: ReceiptItem, value: string) => void;
@@ -1388,11 +1458,23 @@ function ParticipantView(props: ParticipantViewProps) {
           <p className="eyebrow">Распределение завершено</p>
           <h2>Финальный результат</h2>
           {props.calculation ? (
-            <CalculationResult
-              calculation={props.calculation}
-              room={props.room}
-              focusParticipantId={props.participantSession.participantId}
-            />
+            <>
+              <ParticipantFinalSummary
+                calculation={props.calculation}
+                room={props.room}
+                participantId={props.participantSession.participantId}
+                participantName={props.participantSession.name}
+                onCopy={props.onCopyParticipantSummary}
+              />
+              <details className="details-block">
+                <summary>Показать общую таблицу</summary>
+                <CalculationResult
+                  calculation={props.calculation}
+                  room={props.room}
+                  focusParticipantId={props.participantSession.participantId}
+                />
+              </details>
+            </>
           ) : (
             <p>Загрузка результата...</p>
           )}
@@ -1604,6 +1686,8 @@ function StatusPanel({
     finalized: "Распределение завершено",
   } as const;
 
+  const finalizeBlocked = unassignedCount > 0;
+
   return (
     <section className="card status-panel">
       <div>
@@ -1624,12 +1708,24 @@ function StatusPanel({
             </button>
           )}
           {room.status === "claiming" && (
-            <button
-              disabled={loading || unassignedCount > 0}
-              onClick={onFinalize}
-            >
-              Завершить распределение
-            </button>
+            <>
+              <button
+                disabled={loading || finalizeBlocked}
+                title={
+                  finalizeBlocked
+                    ? "Сначала назначьте участников всем позициям"
+                    : undefined
+                }
+                onClick={onFinalize}
+              >
+                Завершить распределение
+              </button>
+              {finalizeBlocked && (
+                <p className="status-warning">
+                  Завершение недоступно: назначьте участников всем позициям.
+                </p>
+              )}
+            </>
           )}
           {room.status === "finalized" && (
             <button className="secondary" disabled={loading} onClick={onReopen}>
@@ -1639,6 +1735,77 @@ function StatusPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function ParticipantFinalSummary({
+  calculation,
+  room,
+  participantId,
+  participantName,
+  onCopy,
+}: {
+  calculation: CalculateResponse;
+  room: Room;
+  participantId: string;
+  participantName: string;
+  onCopy: () => void;
+}) {
+  const ownResult = calculation.results.find(
+    (result) => result.participant_id === participantId,
+  );
+  const ownDebt = calculation.debts.find(
+    (debt) => debt.from_participant_id === participantId,
+  );
+  const incomingDebts = calculation.debts.filter(
+    (debt) => debt.to_participant_id === participantId,
+  );
+
+  return (
+    <div className="participant-final">
+      <div className="participant-final-main">
+        <p className="eyebrow">Ваш итог</p>
+        <p className="participant-final-amount">
+          {formatMoney(ownResult?.total_amount ?? 0, room.currency)}
+        </p>
+        <p className="muted">{participantName}</p>
+      </div>
+
+      <div className="participant-final-debt">
+        {ownDebt ? (
+          <>
+            <p className="eyebrow">К оплате</p>
+            <p className="participant-final-amount">
+              {formatMoney(ownDebt.amount, room.currency)}
+            </p>
+            <p>
+              Переведите <strong>{ownDebt.to_name}</strong> — это человек,
+              который оплатил чек.
+            </p>
+          </>
+        ) : (
+          <p className="success">Переводы не требуются: вы ничего не должны.</p>
+        )}
+
+        {incomingDebts.length > 0 && (
+          <div className="participant-final-incoming">
+            <p className="eyebrow">Вам должны</p>
+            {incomingDebts.map((debt) => (
+              <p key={debt.from_participant_id}>
+                <strong>{debt.from_name}</strong>:{" "}
+                {formatMoney(debt.amount, room.currency)}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="actions">
+        <button type="button" onClick={onCopy}>
+          Скопировать мой итог
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -1839,19 +2006,4 @@ function ParticipantFooter({
       </button>
     </div>
   );
-}
-
-function translateError(message: string): string {
-  const translations: Record<string, string> = {
-    "room is finalized": "Комната уже завершена и заблокирована.",
-    "room is not open for selections": "Организатор ещё не открыл выбор блюд.",
-    "all items must have at least one participant":
-      "Каждая позиция должна быть назначена хотя бы одному участнику.",
-    "payer is required before finalization":
-      "Перед завершением выберите человека, который оплатил чек.",
-    "calculated total does not match expected total":
-      "Рассчитанная сумма не совпадает с итогом на чеке.",
-  };
-
-  return translations[message] ?? message;
 }

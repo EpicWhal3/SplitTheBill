@@ -643,6 +643,77 @@ th {
   padding-block: 42px;
 }
 
+/* Stage 2: unassigned items, confirmations and participant final screen */
+.unassigned-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: var(--warning);
+  font-weight: 700;
+}
+
+.unassigned-list li {
+  overflow-wrap: anywhere;
+}
+
+.participant-final {
+  display: grid;
+  gap: 18px;
+}
+
+.participant-final-main,
+.participant-final-debt {
+  padding: 20px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+.participant-final-main {
+  background: linear-gradient(135deg, #ffffff, #edf8f0);
+  border-color: #cce4d3;
+}
+
+.participant-final-amount {
+  margin: 0 0 6px;
+  font-size: clamp(30px, 6vw, 44px);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
+}
+
+.participant-final-incoming {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.details-block {
+  margin-top: 18px;
+}
+
+.details-block summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.details-block[open] summary {
+  margin-bottom: 12px;
+}
+
+/* Long item and participant names must wrap instead of overflowing. */
+.item-card h3,
+.item-card-top > strong,
+.selected-by p,
+td,
+th {
+  overflow-wrap: anywhere;
+}
+
+.item-card-top > strong {
+  white-space: normal;
+}
+
 @media (max-width: 700px) {
   .status-panel,
   .section-title-row,
@@ -653,5 +724,10 @@ th {
 
   .weight-control {
     grid-template-columns: 1fr;
+  }
+
+  .participant-final-main,
+  .participant-final-debt {
+    padding: 16px;
   }
 }

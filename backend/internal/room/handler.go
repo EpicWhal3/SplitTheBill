@@ -663,10 +663,14 @@ func (h *Handler) unselectItem(w http.ResponseWriter, r *http.Request, roomID, i
 		writeError(w, http.StatusConflict, "room is not open for selections")
 		return
 	}
+
 	if err := h.store.DeleteAssignment(roomID, itemID, participant.ID); err != nil {
-		writeStoreError(w, err, "selection not found")
-		return
+		if !errors.Is(err, store.ErrorNotFound) {
+			writeStoreError(w, err, "selection not found")
+			return
+		}
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

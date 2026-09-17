@@ -179,7 +179,7 @@ cd web && npm run test && npm run lint && npm run build
 | `POST /rooms/{roomId}/assignments` | Назначить позицию участнику         |
 | `DELETE /rooms/{roomId}/assignments/{itemId}/{participantId}` | Снять назначение            |
 | `PUT /rooms/{roomId}/selections/{itemId}` | Участник выбирает позицию           |
-| `DELETE /rooms/{roomId}/selections/{itemId}` | Участник снимает выбор              |
+| `DELETE /rooms/{roomId}/selections/{itemId}` | Участник снимает выбор (идемпотентно, всегда `204` ) |
 | `POST /rooms/{roomId}/calculate` | Рассчитать итоги                    |
 | `POST /rooms/{roomId}/open` | Перевести в `claiming` |
 | `POST /rooms/{roomId}/finalize` | Зафиксировать результат             |

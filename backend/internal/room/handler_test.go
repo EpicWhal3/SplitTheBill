@@ -694,7 +694,7 @@ func TestUnselectRemovesAssignment(t *testing.T) {
 	}
 }
 
-func TestUnselectMissingSelectionReturnsNotFound(t *testing.T) {
+func TestUnselectMissingSelectionIsIdempotent(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	handler := NewHandler(memoryStore)
 
@@ -721,7 +721,97 @@ func TestUnselectMissingSelectionReturnsNotFound(t *testing.T) {
 		"/rooms/"+room.ID+"/selections/"+item.ID,
 		nil,
 		map[string]string{"X-Participant-Token": joined.ParticipantToken},
-		http.StatusNotFound,
+		http.StatusNoContent,
+	)
+}
+
+func TestUnselectTwiceIsIdempotent(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, _ := memoryStore.CreateRoom(domain.Room{
+		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
+	})
+	joined := doJSON[joinResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+room.ID+"/join",
+		map[string]any{"name": "Аня"},
+		nil,
+		http.StatusCreated,
+	)
+	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
+		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
+	})
+
+	doJSON[domain.ItemAssignment](
+		t,
+		handler,
+		http.MethodPut,
+		"/rooms/"+room.ID+"/selections/"+item.ID,
+		map[string]any{"weight": 1},
+		map[string]string{"X-Participant-Token": joined.ParticipantToken},
+		http.StatusOK,
+	)
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodDelete,
+		"/rooms/"+room.ID+"/selections/"+item.ID,
+		nil,
+		map[string]string{"X-Participant-Token": joined.ParticipantToken},
+		http.StatusNoContent,
+	)
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodDelete,
+		"/rooms/"+room.ID+"/selections/"+item.ID,
+		nil,
+		map[string]string{"X-Participant-Token": joined.ParticipantToken},
+		http.StatusNoContent,
+	)
+
+	assignments, err := memoryStore.ListAssignments(room.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("expected no assignments, got %#v", assignments)
+	}
+}
+
+func TestUnselectStillRequiresClaimingStatus(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, _ := memoryStore.CreateRoom(domain.Room{
+		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusDraft,
+	})
+	joined := doJSON[joinResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+room.ID+"/join",
+		map[string]any{"name": "Аня"},
+		nil,
+		http.StatusCreated,
+	)
+	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
+		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
+	})
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodDelete,
+		"/rooms/"+room.ID+"/selections/"+item.ID,
+		nil,
+		map[string]string{"X-Participant-Token": joined.ParticipantToken},
+		http.StatusConflict,
 	)
 }
 
