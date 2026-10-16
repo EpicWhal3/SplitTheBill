@@ -1,0 +1,51 @@
+# IDEs
+.idea/
+.vscode/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Environment files and secrets
+*.local
+*.local.*
+!.env.local.example
+.env
+.env.*
+!.env.example
+
+# Frontend dependencies and build output
+web/node_modules/
+web/.pnp/
+web/.pnp.*
+web/.yarn/*
+!web/.yarn/patches
+!web/.yarn/plugins
+!web/.yarn/releases
+!web/.yarn/versions
+web/.next/
+web/out/
+web/build/
+web/coverage/
+web/.vercel/
+web/next-env.d.ts
+web/*.tsbuildinfo
+
+# Package manager and debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Certificates and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Go build and test artifacts
+backend/bin/
+backend/*.test
+backend/coverage.out
+backend/coverage.html
+

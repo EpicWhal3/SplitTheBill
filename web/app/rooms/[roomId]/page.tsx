@@ -13,6 +13,7 @@ import {
   addAssignment,
   addItem,
   addParticipant,
+  API_URL,
   calculateRoom,
   type CalculateResponse,
   deleteAssignment,
@@ -173,9 +174,33 @@ export default function RoomPage({ params }: Props) {
       return;
     }
 
+    if (typeof window === "undefined" || !("EventSource" in window)) {
+      return;
+    }
+
+    const source = new EventSource(
+      `${API_URL}/rooms/${encodeURIComponent(roomId)}/events`,
+    );
+    const handleRoomUpdated = () => {
+      void loadRoomData(roomId, false, true);
+    };
+
+    source.addEventListener("room.updated", handleRoomUpdated);
+
+    return () => {
+      source.removeEventListener("room.updated", handleRoomUpdated);
+      source.close();
+    };
+  }, [loadRoomData, roomId]);
+
+  useEffect(() => {
+    if (!roomId) {
+      return;
+    }
+
     const intervalId = window.setInterval(() => {
       void loadRoomData(roomId, false, true);
-    }, 3000);
+    }, 15000);
 
     return () => window.clearInterval(intervalId);
   }, [loadRoomData, roomId]);

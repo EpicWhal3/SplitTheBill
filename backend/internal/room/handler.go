@@ -26,10 +26,14 @@ const (
 
 type Handler struct {
 	store store.Store
+	hub   *roomHub
 }
 
 func NewHandler(appStore store.Store) *Handler {
-	return &Handler{store: appStore}
+	return &Handler{
+		store: appStore,
+		hub:   newRoomHub(),
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +71,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) == 3 {
 		switch parts[2] {
+		case "events":
+			if r.Method == http.MethodGet {
+				h.events(w, r, roomID)
+				return
+			}
 		case "join":
 			if r.Method == http.MethodPost {
 				h.joinParticipant(w, r, roomID)
@@ -316,6 +325,7 @@ func (h *Handler) updateRoom(w http.ResponseWriter, r *http.Request, roomID stri
 		writeStoreError(w, err, "room not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -351,6 +361,59 @@ func (h *Handler) getRoom(w http.ResponseWriter, roomID string) {
 	})
 }
 
+func (h *Handler) events(w http.ResponseWriter, r *http.Request, roomID string) {
+	if _, err := h.store.GetRoom(roomID); err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	subscriber, unsubscribe := h.hub.subscribe(roomID)
+	defer unsubscribe()
+
+	writeEvent := func() error {
+		data, err := json.Marshal(roomEvent{RoomID: roomID})
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, "event: room.updated\ndata: "); err != nil {
+			return err
+		}
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, "\n\n"); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	if err := writeEvent(); err != nil {
+		return
+	}
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-subscriber:
+			if err := writeEvent(); err != nil {
+				return
+			}
+		}
+	}
+}
+
 type participantRequest struct {
 	Name string `json:"name"`
 }
@@ -377,6 +440,7 @@ func (h *Handler) addParticipant(w http.ResponseWriter, r *http.Request, roomID 
 		writeStoreError(w, err, "room not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -407,6 +471,7 @@ func (h *Handler) joinParticipant(w http.ResponseWriter, r *http.Request, roomID
 		writeStoreError(w, err, "room not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"participant":       participant,
 		"participant_token": participant.AccessToken,
@@ -442,6 +507,7 @@ func (h *Handler) updateParticipant(w http.ResponseWriter, r *http.Request, room
 		writeStoreError(w, err, "participant not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -454,6 +520,7 @@ func (h *Handler) deleteParticipant(w http.ResponseWriter, r *http.Request, room
 		writeStoreError(w, err, "participant not found")
 		return
 	}
+	h.hub.publish(roomID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -493,6 +560,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request, roomID string)
 		writeStoreError(w, err, "room not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -539,6 +607,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request, roomID, ite
 		writeStoreError(w, err, "item not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -551,6 +620,7 @@ func (h *Handler) deleteItem(w http.ResponseWriter, r *http.Request, roomID, ite
 		writeStoreError(w, err, "item not found")
 		return
 	}
+	h.hub.publish(roomID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -591,6 +661,7 @@ func (h *Handler) addAssignment(w http.ResponseWriter, r *http.Request, roomID s
 		writeAssignmentStoreError(w, err)
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -603,6 +674,7 @@ func (h *Handler) deleteAssignment(w http.ResponseWriter, r *http.Request, roomI
 		writeStoreError(w, err, "assignment not found")
 		return
 	}
+	h.hub.publish(roomID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -645,6 +717,7 @@ func (h *Handler) selectItem(w http.ResponseWriter, r *http.Request, roomID, ite
 		writeAssignmentStoreError(w, err)
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusOK, created)
 }
 
@@ -671,6 +744,7 @@ func (h *Handler) unselectItem(w http.ResponseWriter, r *http.Request, roomID, i
 		}
 	}
 
+	h.hub.publish(roomID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -701,6 +775,7 @@ func (h *Handler) openClaiming(w http.ResponseWriter, r *http.Request, roomID st
 		writeStoreError(w, err, "room not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -736,6 +811,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request, roomID string
 		writeStoreError(w, err, "room not found")
 		return
 	}
+	h.hub.publish(roomID)
 	response.Room = updated
 	writeJSON(w, http.StatusOK, response)
 }
@@ -757,6 +833,7 @@ func (h *Handler) reopen(w http.ResponseWriter, r *http.Request, roomID string) 
 		writeStoreError(w, err, "room not found")
 		return
 	}
+	h.hub.publish(roomID)
 	writeJSON(w, http.StatusOK, updated)
 }
 

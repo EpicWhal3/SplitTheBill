@@ -1,16 +1,114 @@
 package room
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
 
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"splitthebill/backend/internal/domain"
 	"splitthebill/backend/internal/store"
 )
+
+func TestRoomEventsNotFound(t *testing.T) {
+	handler := NewHandler(store.NewMemoryStore())
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/rooms/missing/events", nil)
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", recorder.Code)
+	}
+}
+
+func TestRoomEventsSendsInitialAndPublishedEvents(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	room, err := memoryStore.CreateRoom(domain.Room{
+		Title:    "Dinner",
+		Currency: "EUR",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(memoryStore)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	response, err := server.Client().Get(server.URL + "/rooms/" + room.ID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+	if response.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("unexpected content type: %q", response.Header.Get("Content-Type"))
+	}
+	if response.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("unexpected cache control: %q", response.Header.Get("Cache-Control"))
+	}
+	if response.Header.Get("Connection") != "keep-alive" {
+		t.Fatalf("unexpected connection header: %q", response.Header.Get("Connection"))
+	}
+
+	events := bufio.NewReader(response.Body)
+	initial := readSSEEvent(t, events)
+	if initial != "event: room.updated\ndata: {\"room_id\":\""+room.ID+"\"}" {
+		t.Fatalf("unexpected initial event: %q", initial)
+	}
+
+	body := bytes.NewBufferString(`{"title":"Updated"}`)
+	request, err := http.NewRequest(
+		http.MethodPatch,
+		server.URL+"/rooms/"+room.ID,
+		body,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Admin-Token", room.AdminToken)
+	updateResponse, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateResponse.Body.Close()
+	if updateResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected update 200, got %d", updateResponse.StatusCode)
+	}
+
+	published := readSSEEvent(t, events)
+	if published != initial {
+		t.Fatalf("unexpected published event: %q", published)
+	}
+}
+
+func readSSEEvent(t *testing.T, reader *bufio.Reader) string {
+	t.Helper()
+	var event bytes.Buffer
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			return event.String()
+		}
+		if event.Len() > 0 {
+			event.WriteByte('\n')
+		}
+		event.WriteString(line)
+	}
+}
 
 type createRoomResponse struct {
 	Room       domain.Room `json:"room"`
