@@ -2,11 +2,11 @@
 
 import * as QRCode from "qrcode";
 import {
+  type SubmitEvent,
   useCallback,
   useEffect,
   useMemo,
   useState,
-  type SubmitEvent,
 } from "react";
 
 import {
@@ -14,8 +14,8 @@ import {
   addItem,
   addParticipant,
   API_URL,
-  calculateRoom,
   type CalculateResponse,
+  calculateRoom,
   deleteAssignment,
   deleteItem,
   deleteParticipant,
@@ -33,18 +33,18 @@ import {
   updateItem,
   updateParticipant,
   updateRoom,
-} from "../../../lib/api";
-import { translateError } from "../../../lib/errors";
-import { calculateParticipantPreview } from "../../../lib/local-calculation";
-import { formatMoney, tryParseMoneyToMinorUnits } from "../../../lib/money";
+} from "@/lib/api";
+import { translateError } from "@/lib/errors";
+import { calculateParticipantPreview } from "@/lib/local-calculation";
+import { formatMoney, tryParseMoneyToMinorUnits } from "@/lib/money";
 import {
   clearAdminToken,
   clearParticipantSession,
   loadAdminToken,
   loadParticipantSession,
-  saveParticipantSession,
   type ParticipantSession,
-} from "../../../lib/session";
+  saveParticipantSession,
+} from "@/lib/session";
 
 type Props = {
   params: Promise<{

@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, type SubmitEvent } from "react";
+import { type SubmitEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { createRoom } from "../lib/api";
-import { saveAdminToken } from "../lib/session";
+import { createRoom } from "@/lib/api";
+import { saveAdminToken } from "@/lib/session";
 
 export default function HomePage() {
   const router = useRouter();

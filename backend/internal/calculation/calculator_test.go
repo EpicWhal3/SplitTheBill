@@ -320,7 +320,7 @@ func TestCalculateRejectsUnsupportedDiscountMode(t *testing.T) {
 		Participants: []domain.Participant{{ID: "p1", Name: "A"}},
 		Items:        []domain.ReceiptItem{{ID: "i1", Name: "Pizza", Total: 900}},
 		Assignments:  []domain.ItemAssignment{{ItemID: "i1", ParticipantID: "p1", Weight: 1}},
-		DiscountMode: domain.DiscountMode("unknown"),
+		DiscountMode: "unknown",
 	})
 	assertErrorContains(t, err, "unsupported discount mode")
 }

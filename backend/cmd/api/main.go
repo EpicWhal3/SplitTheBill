@@ -135,7 +135,7 @@ func resolveAllowedOrigins() map[string]bool {
 
 	allowedOrigins := make(map[string]bool)
 
-	for _, origin := range strings.Split(raw, ",") {
+	for origin := range strings.SplitSeq(raw, ",") {
 		origin = strings.TrimSpace(origin)
 
 		if origin == "" || origin == "*" {

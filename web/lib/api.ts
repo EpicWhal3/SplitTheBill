@@ -126,9 +126,7 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   }
 
   const data = (await response.json().catch(() => null)) as
-    | APIErrorPayload
-    | T
-    | null;
+    APIErrorPayload | T | null;
 
   if (!response.ok) {
     const errorData = data as APIErrorPayload | null;

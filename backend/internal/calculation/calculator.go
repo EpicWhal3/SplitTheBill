@@ -301,9 +301,7 @@ func splitEquallyWithCapacity(total int64, capacity map[string]int64) map[string
 			}
 
 			actual := desired
-			if actual > remainingCapacity[participantID] {
-				actual = remainingCapacity[participantID]
-			}
+			actual = min(remainingCapacity[participantID], actual)
 
 			result[participantID] += actual
 			remainingCapacity[participantID] -= actual
@@ -348,7 +346,7 @@ func distributeRemainder(
 		return remainders[i].Value > remainders[j].Value
 	})
 
-	for i := int64(0); i < left; i++ {
+	for i := range left {
 		index := i % int64(len(remainders))
 		result[remainders[index].ParticipantID]++
 	}

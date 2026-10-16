@@ -309,7 +309,7 @@ func (h *Handler) updateRoom(w http.ResponseWriter, r *http.Request, roomID stri
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateDiscountMode(domain.DiscountMode(room.DiscountMode)); err != nil {
+	if err := validateDiscountMode(room.DiscountMode); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -905,7 +905,7 @@ func (h *Handler) buildCalculationResponse(roomID string, room domain.Room) (cal
 		matchesExpected = difference == 0
 	}
 
-	debts := []domain.Debt{}
+	var debts []domain.Debt
 	if room.PayerParticipantID != "" {
 		debts, err = calculation.BuildDebts(results, room.PayerParticipantID)
 		if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"net/http/httptest"
@@ -43,7 +44,12 @@ func TestRoomEventsSendsInitialAndPublishedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(response.Body)
 
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", response.StatusCode)

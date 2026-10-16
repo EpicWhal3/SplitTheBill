@@ -23,7 +23,12 @@ func Run(databaseURL string) error {
 	if err != nil {
 		return err
 	}
-	defer m.Close()
+	defer func(m *migrate.Migrate) {
+		err, _ := m.Close()
+		if err != nil {
+			log.Println("Failed to close migration: ", err)
+		}
+	}(m)
 
 	err = m.Up()
 
