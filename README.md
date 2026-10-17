@@ -31,15 +31,15 @@ SplitTheBill/
 
 * **Backend** — Go, стандартная библиотека `net/http`, деньги хранятся как
   `int64` в минорных единицах (копейках).
-* **Хранилище** — PostgreSQL (продакшен) или in-memory (локальная разработка
-  без базы данных).
+* **Хранилище** — PostgreSQL в Docker Compose или in-memory (локальная
+  разработка без базы данных).
 * **Frontend** — Next.js 16 (App Router), React 19, TypeScript.
 
 ## Требования
 
 * Go 1.24+ (см. [`backend/go.mod`](backend/go.mod))
 * Node.js 22+ и npm
-* Docker (опционально, для PostgreSQL)
+* Docker с Compose
 
 ## Быстрый старт
 
@@ -55,19 +55,30 @@ go run ./cmd/api
 
 Сервер поднимется на `http://localhost:8080` (или на порту из `PORT` ).
 
-### 2. PostgreSQL через Docker Compose
+### 2. Все сервисы через Docker Compose
 
 ```bash
-cd backend
-docker compose up -d
+docker compose up --build
 ```
 
-Поднимается PostgreSQL 17 на `localhost:5432` с базой, пользователем и паролем
-`splitthebill` .
+Команда запускает PostgreSQL, backend и web. Приложение доступно на
+`http://localhost:3000`, API — на `http://localhost:8080`.
+
+Для остановки сервисов:
+
+```bash
+docker compose down
+```
+
+Чтобы удалить также данные PostgreSQL:
+
+```bash
+docker compose down -v
+```
 
 ### 3. Переменные окружения backend
 
-Скопируйте пример и при необходимости отредактируйте:
+При ручном запуске backend скопируйте пример и при необходимости отредактируйте:
 
 ```bash
 cd backend
@@ -97,7 +108,7 @@ cd backend
 DATABASE_URL="postgres://splitthebill:splitthebill@localhost:5432/splitthebill?sslmode=disable" go run ./cmd/api
 ```
 
-### 5. Frontend
+### 5. Frontend отдельно (режим разработки)
 
 ```bash
 cd web
