@@ -368,3 +368,23 @@ export function calculateRoom(roomId: string): Promise<CalculateResponse> {
     method: "POST",
   });
 }
+
+export function deleteRoom(roomId: string, adminToken: string): Promise<void> {
+  return request<void>(`/rooms/${id(roomId)}`, {
+    method: "DELETE",
+    adminToken,
+  });
+}
+
+export function rotateAdminToken(
+  roomId: string,
+  adminToken: string,
+): Promise<CreateRoomResponse> {
+  return request<CreateRoomResponse>(
+    `/rooms/${id(roomId)}/admin-token/rotate`,
+    {
+      method: "POST",
+      adminToken,
+    },
+  );
+}

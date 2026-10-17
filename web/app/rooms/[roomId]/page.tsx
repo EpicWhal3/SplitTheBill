@@ -1,6 +1,7 @@
 "use client";
 
 import * as QRCode from "qrcode";
+import { useRouter } from "next/navigation";
 import {
   type SubmitEvent,
   useCallback,
@@ -19,6 +20,7 @@ import {
   deleteAssignment,
   deleteItem,
   deleteParticipant,
+  deleteRoom,
   finalizeRoom,
   getRoom,
   type ItemAssignment,
@@ -28,6 +30,7 @@ import {
   type ReceiptItem,
   reopenRoom,
   type Room,
+  rotateAdminToken,
   selectItem,
   unselectItem,
   updateItem,
@@ -43,6 +46,7 @@ import {
   loadAdminToken,
   loadParticipantSession,
   type ParticipantSession,
+  saveAdminToken,
   saveParticipantSession,
 } from "@/lib/session";
 
@@ -55,6 +59,7 @@ type Props = {
 type WeightDrafts = Record<string, string>;
 
 export default function RoomPage({ params }: Props) {
+  const router = useRouter();
   const [roomId, setRoomId] = useState("");
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -745,6 +750,78 @@ export default function RoomPage({ params }: Props) {
     await runAdminMutation(() => reopenRoom(roomId, adminToken));
   }
 
+  async function handleRotateAdminToken() {
+    if (!roomId || !adminToken) {
+      setError("В этом браузере нет ключа организатора.");
+      return;
+    }
+
+    if (
+      !window.confirm(
+        "Сгенерировать новый ключ организатора? Старый ключ перестанет работать.",
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const result = await rotateAdminToken(roomId, adminToken);
+      saveAdminToken(roomId, result.admin_token);
+      setAdminToken(result.admin_token);
+      setCopyState(
+        "Ключ организатора обновлён. Старый ключ больше не работает.",
+      );
+      window.setTimeout(() => setCopyState(""), 4000);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Не удалось обновить ключ";
+      setError(message);
+      if (message === "organizer access required") {
+        clearAdminToken(roomId);
+        setAdminToken("");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDeleteRoom() {
+    if (!roomId || !adminToken) {
+      setError("В этом браузере нет ключа организатора.");
+      return;
+    }
+
+    if (
+      !window.confirm(
+        "Удалить комнату навсегда? Участники, позиции и назначения будут удалены без возможности восстановления.",
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      await deleteRoom(roomId, adminToken);
+      clearAdminToken(roomId);
+      clearParticipantSession(roomId);
+      router.push("/");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Не удалось удалить комнату";
+      setError(message);
+      if (message === "organizer access required") {
+        clearAdminToken(roomId);
+        setAdminToken("");
+      }
+      setLoading(false);
+    }
+  }
+
   async function handleCopySummary() {
     if (!room || !calculation) {
       return;
@@ -933,6 +1010,8 @@ export default function RoomPage({ params }: Props) {
             void handleDeleteAssignment(assignment)
           }
           onCalculate={() => void handleCalculate()}
+          onRotateAdminToken={() => void handleRotateAdminToken()}
+          onDeleteRoom={() => void handleDeleteRoom()}
         />
       ) : (
         <ParticipantView
@@ -1024,6 +1103,8 @@ type AdminViewProps = {
   onAddAssignment: (event: SubmitEvent<HTMLFormElement>) => void;
   onDeleteAssignment: (assignment: ItemAssignment) => void;
   onCalculate: () => void;
+  onRotateAdminToken: () => void;
+  onDeleteRoom: () => void;
 };
 
 function AdminView(props: AdminViewProps) {
@@ -1422,6 +1503,37 @@ function AdminView(props: AdminViewProps) {
             участнику.
           </p>
         )}
+      </section>
+
+      <section className="card">
+        <div className="section-title-row">
+          <div>
+            <p className="eyebrow">Опасная зона</p>
+            <h2>Администрирование</h2>
+          </div>
+        </div>
+        <p className="muted">
+          Новый ключ организатора делает старый ключ недействительным. Удаление
+          комнаты безвозвратно убирает участников, позиции и назначения.
+        </p>
+        <div className="actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={props.loading}
+            onClick={props.onRotateAdminToken}
+          >
+            Сгенерировать новый ключ
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={props.loading}
+            onClick={props.onDeleteRoom}
+          >
+            Удалить комнату
+          </button>
+        </div>
       </section>
     </>
   );

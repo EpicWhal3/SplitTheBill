@@ -18,19 +18,19 @@
 
 ```markdown
 SplitTheBill/
-├── backend/          # Go API (net/http), PostgreSQL или in-memory хранилище
-│   ├── cmd/api/      # точка входа
-│   ├── internal/     # domain, store, room (HTTP-хендлеры), calculation, migration
-│   └── migrations/   # SQL-миграции (golang-migrate)
-├── web/              # Next.js (App Router) + React + TypeScript
-│   ├── app/          # страницы: лендинг и комната
-│   └── lib/          # API-клиент, расчёты, работа с деньгами и сессией
+├── backend/ # Go API (net/http), PostgreSQL или in-memory хранилище
+│ ├── cmd/api/ # точка входа
+│ ├── internal/ # domain, store, room (HTTP-хендлеры), calculation, migration
+│ └── migrations/ # SQL-миграции (golang-migrate)
+├── web/ # Next.js (App Router) + React + TypeScript
+│ ├── app/ # страницы: лендинг и комната
+│ └── lib/ # API-клиент, расчёты, работа с деньгами и сессией
 └── .github/workflows # CI
 
 ```
 
 * **Backend** — Go, стандартная библиотека `net/http`, деньги хранятся как
-`int64` в минорных единицах (копейках).
+  `int64` в минорных единицах (копейках).
 * **Хранилище** — PostgreSQL (продакшен) или in-memory (локальная разработка
   без базы данных).
 * **Frontend** — Next.js 16 (App Router), React 19, TypeScript.
@@ -74,11 +74,11 @@ cd backend
 cp .env.example .env
 ```
 
-| Переменная | Назначение | По умолчанию |
-| ----------------- | -------------------------------------------------------------------------- | ------------ |
-| `DATABASE_URL` | Строка подключения к PostgreSQL. Если пусто — используется in-memory режим. | пусто |
-| `PORT` | Порт HTTP-сервера. | `8080` |
-| `ALLOWED_ORIGINS` | Список разрешённых CORS-origin через запятую. `*` не поддерживается. | `http://localhost:3000,http://127.0.0.1:3000,http://192.168.56.1:3000` |
+| Переменная        | Назначение                                                                  | По умолчанию                                                           |
+|-------------------|-----------------------------------------------------------------------------|------------------------------------------------------------------------|
+| `DATABASE_URL`    | Строка подключения к PostgreSQL. Если пусто — используется in-memory режим. | пусто                                                                  |
+| `PORT`            | Порт HTTP-сервера.                                                          | `8080`                                                                 |
+| `ALLOWED_ORIGINS` | Список разрешённых CORS-origin через запятую. `*` не поддерживается.        | `http://localhost:3000,http://127.0.0.1:3000,http://192.168.56.1:3000` |
 
 Пример `DATABASE_URL` :
 
@@ -108,9 +108,9 @@ npm run dev
 
 Приложение откроется на `http://localhost:3000` .
 
-| Переменная            | Назначение                          | По умолчанию            |
-| --------------------- | ----------------------------------- | ----------------------- |
-| `NEXT_PUBLIC_API_URL` | Базовый URL backend API.            | `http://localhost:8080` |
+| Переменная            | Назначение               | По умолчанию            |
+|-----------------------|--------------------------|-------------------------|
+| `NEXT_PUBLIC_API_URL` | Базовый URL backend API. | `http://localhost:8080` |
 
 ## Миграции и существующие базы
 
@@ -118,15 +118,7 @@ npm run dev
 миграции `000001` , может не содержать колонок `discount_mode` , `status` и
 `finalized_at` в таблице `rooms` .
 
-* **Если база создана старой схемой** — примените новую миграцию
-  [ `000002_room_lifecycle_compatibility.up.sql` ](backend/migrations/000002_room_lifecycle_compatibility.up.sql).
-  Она идемпотентна: добавляет недостающие колонки через
-`ADD COLUMN IF NOT EXISTS` , проставляет значения по умолчанию для старых
-  строк и безопасно создаёт CHECK-ограничения. Достаточно запустить backend с
-`DATABASE_URL` — миграция применится автоматически.
 * **Для локальной разработки без важных данных** — проще пересоздать базу:
-
-  
 
 ```bash
   cd backend
@@ -134,7 +126,7 @@ npm run dev
   docker compose up -d
   ```
 
-  Флаг `-v` удаляет том с данными PostgreSQL.
+Флаг `-v` удаляет том с данными PostgreSQL.
 
 ## Тесты и проверки
 
@@ -152,39 +144,39 @@ cd web && npm run test && npm run lint && npm run build
 
 ## Жизненный цикл комнаты
 
-| Статус      | Описание                                                              |
-| ----------- | --------------------------------------------------------------------- |
-| `draft` | Организатор готовит чек: добавляет позиции, участников и правила.     |
-| `claiming` | Участники выбирают свои блюда и указывают веса.                       |
-| `finalized` | Распределение завершено, суммы и долги зафиксированы.                 |
+| Статус      | Описание                                                          |
+|-------------|-------------------------------------------------------------------|
+| `draft`     | Организатор готовит чек: добавляет позиции, участников и правила. |
+| `claiming`  | Участники выбирают свои блюда и указывают веса.                   |
+| `finalized` | Распределение завершено, суммы и долги зафиксированы.             |
 
-Переходы: `draft` → `claiming` ( `POST /rooms/{roomId}/open` ), 
-`claiming` → `finalized` ( `POST /rooms/{roomId}/finalize` ), 
+Переходы: `draft` → `claiming` ( `POST /rooms/{roomId}/open` ),
+`claiming` → `finalized` ( `POST /rooms/{roomId}/finalize` ),
 возврат в `claiming` ( `POST /rooms/{roomId}/reopen` ).
 
 ## API
 
-| Метод и путь                                          | Назначение                          |
-| ----------------------------------------------------- | ----------------------------------- |
-| `POST /rooms` | Создать комнату                     |
-| `GET /rooms/{roomId}` | Получить состояние комнаты          |
-| `PATCH /rooms/{roomId}` | Обновить параметры комнаты          |
-| `POST /rooms/{roomId}/join` | Присоединиться как участник         |
-| `POST /rooms/{roomId}/participants` | Добавить участника (организатор)    |
-| `PATCH /rooms/{roomId}/participants/{participantId}` | Изменить участника                  |
-| `DELETE /rooms/{roomId}/participants/{participantId}` | Удалить участника                   |
-| `POST /rooms/{roomId}/items` | Добавить позицию чека               |
-| `PATCH /rooms/{roomId}/items/{itemId}` | Изменить позицию                    |
-| `DELETE /rooms/{roomId}/items/{itemId}` | Удалить позицию                     |
-| `POST /rooms/{roomId}/assignments` | Назначить позицию участнику         |
-| `DELETE /rooms/{roomId}/assignments/{itemId}/{participantId}` | Снять назначение            |
-| `PUT /rooms/{roomId}/selections/{itemId}` | Участник выбирает позицию           |
-| `DELETE /rooms/{roomId}/selections/{itemId}` | Участник снимает выбор (идемпотентно, всегда `204` ) |
-| `POST /rooms/{roomId}/calculate` | Рассчитать итоги                    |
-| `POST /rooms/{roomId}/open` | Перевести в `claiming` |
-| `POST /rooms/{roomId}/finalize` | Зафиксировать результат             |
-| `POST /rooms/{roomId}/reopen` | Вернуть в `claiming` |
-| `GET /health` | Проверка живости сервиса            |
+| Метод и путь                                                  | Назначение                                           |
+|---------------------------------------------------------------|------------------------------------------------------|
+| `POST /rooms`                                                 | Создать комнату                                      |
+| `GET /rooms/{roomId}`                                         | Получить состояние комнаты                           |
+| `PATCH /rooms/{roomId}`                                       | Обновить параметры комнаты                           |
+| `POST /rooms/{roomId}/join`                                   | Присоединиться как участник                          |
+| `POST /rooms/{roomId}/participants`                           | Добавить участника (организатор)                     |
+| `PATCH /rooms/{roomId}/participants/{participantId}`          | Изменить участника                                   |
+| `DELETE /rooms/{roomId}/participants/{participantId}`         | Удалить участника                                    |
+| `POST /rooms/{roomId}/items`                                  | Добавить позицию чека                                |
+| `PATCH /rooms/{roomId}/items/{itemId}`                        | Изменить позицию                                     |
+| `DELETE /rooms/{roomId}/items/{itemId}`                       | Удалить позицию                                      |
+| `POST /rooms/{roomId}/assignments`                            | Назначить позицию участнику                          |
+| `DELETE /rooms/{roomId}/assignments/{itemId}/{participantId}` | Снять назначение                                     |
+| `PUT /rooms/{roomId}/selections/{itemId}`                     | Участник выбирает позицию                            |
+| `DELETE /rooms/{roomId}/selections/{itemId}`                  | Участник снимает выбор (идемпотентно, всегда `204` ) |
+| `POST /rooms/{roomId}/calculate`                              | Рассчитать итоги                                     |
+| `POST /rooms/{roomId}/open`                                   | Перевести в `claiming`                               |
+| `POST /rooms/{roomId}/finalize`                               | Зафиксировать результат                              |
+| `POST /rooms/{roomId}/reopen`                                 | Вернуть в `claiming`                                 |
+| `GET /health`                                                 | Проверка живости сервиса                             |
 
 Авторизация передаётся заголовками `X-Admin-Token` (организатор) и
 `X-Participant-Token` (участник).

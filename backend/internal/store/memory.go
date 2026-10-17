@@ -499,6 +499,39 @@ func (s *MemoryStore) DeleteAssignment(
 	return nil
 }
 
+func (s *MemoryStore) DeleteRoom(roomID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.rooms[roomID]; !ok {
+		return ErrorNotFound
+	}
+
+	delete(s.rooms, roomID)
+	delete(s.participants, roomID)
+	delete(s.items, roomID)
+	delete(s.assignments, roomID)
+
+	return nil
+}
+
+func (s *MemoryStore) RotateAdminToken(
+	roomID string,
+) (domain.Room, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room, ok := s.rooms[roomID]
+	if !ok {
+		return domain.Room{}, ErrorNotFound
+	}
+
+	room.AdminToken = newToken()
+	s.rooms[roomID] = room
+
+	return room, nil
+}
+
 func (s *MemoryStore) participantNameExists(
 	roomID string,
 	name string,

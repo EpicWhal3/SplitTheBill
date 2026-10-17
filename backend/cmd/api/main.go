@@ -37,6 +37,17 @@ func main() {
 
 	addr := ":" + resolvePort()
 
+	rateLimitPerSecond, rateLimitBurst := resolveRateLimitConfig()
+
+	handler := withCORS(mux)
+	handler = withMaxRequestBody(resolveMaxRequestBodyBytes())(handler)
+	handler = withRateLimit(
+		newRateLimiter(rateLimitPerSecond, rateLimitBurst),
+		handler,
+	)
+	handler = withSecurityHeaders(handler)
+	handler = withRequestLogging(handler)
+
 	log.Println(
 		"SplitCheck API is running on",
 		addr,
@@ -44,7 +55,7 @@ func main() {
 
 	if err := http.ListenAndServe(
 		addr,
-		withCORS(mux),
+		handler,
 	); err != nil {
 		log.Fatal(err)
 	}

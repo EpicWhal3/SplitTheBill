@@ -17,6 +17,8 @@ type Store interface {
 	CreateRoom(room domain.Room) (domain.Room, error)
 	GetRoom(roomID string) (domain.Room, error)
 	UpdateRoom(room domain.Room) (domain.Room, error)
+	DeleteRoom(roomID string) error
+	RotateAdminToken(roomID string) (domain.Room, error)
 
 	AddParticipant(roomID string, participant domain.Participant) (domain.Participant, error)
 	JoinParticipant(roomID string, name string) (domain.Participant, error)

@@ -50,3 +50,14 @@ func (h *roomHub) publish(roomID string) {
 		}
 	}
 }
+
+func (h *roomHub) removeRoom(roomID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for subscriber := range h.subscribers[roomID] {
+		close(subscriber)
+	}
+
+	delete(h.subscribers, roomID)
+}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -1461,6 +1462,271 @@ func TestWeightTwoVersusWeightOneThroughAPI(t *testing.T) {
 	}
 	if amounts[heavy.ID] != 600 || amounts[light.ID] != 300 {
 		t.Fatalf("weight 2 must get double of weight 1: %#v", amounts)
+	}
+}
+
+func TestDeleteRoomRequiresAdminToken(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, err := memoryStore.CreateRoom(domain.Room{
+		Title:    "Dinner",
+		Currency: "EUR",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodDelete,
+		"/rooms/"+room.ID,
+		nil,
+		nil,
+		http.StatusUnauthorized,
+	)
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodDelete,
+		"/rooms/"+room.ID,
+		nil,
+		map[string]string{"X-Admin-Token": "wrong-token"},
+		http.StatusUnauthorized,
+	)
+
+	doJSON[map[string]any](
+		t,
+		handler,
+		http.MethodGet,
+		"/rooms/"+room.ID,
+		nil,
+		nil,
+		http.StatusOK,
+	)
+}
+
+func TestDeleteRoomRemovesRoomAndRelatedData(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, err := memoryStore.CreateRoom(domain.Room{
+		Title:    "Dinner",
+		Currency: "EUR",
+		Status:   domain.RoomStatusFinalized,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	participant, err := memoryStore.AddParticipant(
+		room.ID,
+		domain.Participant{Name: "Аня"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := memoryStore.AddItem(room.ID, domain.ReceiptItem{
+		Name:      "Pizza",
+		Quantity:  1,
+		UnitPrice: 1000,
+		Total:     1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memoryStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID:        item.ID,
+		ParticipantID: participant.ID,
+		Weight:        1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	doJSON[map[string]any](
+		t,
+		handler,
+		http.MethodDelete,
+		"/rooms/"+room.ID,
+		nil,
+		map[string]string{"X-Admin-Token": room.AdminToken},
+		http.StatusNoContent,
+	)
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodGet,
+		"/rooms/"+room.ID,
+		nil,
+		nil,
+		http.StatusNotFound,
+	)
+	if _, err := memoryStore.ListParticipants(room.ID); !errors.Is(err, store.ErrorNotFound) {
+		t.Fatalf("expected participants to be removed, got %v", err)
+	}
+	if _, err := memoryStore.ListItems(room.ID); !errors.Is(err, store.ErrorNotFound) {
+		t.Fatalf("expected items to be removed, got %v", err)
+	}
+	if _, err := memoryStore.ListAssignments(room.ID); !errors.Is(err, store.ErrorNotFound) {
+		t.Fatalf("expected assignments to be removed, got %v", err)
+	}
+}
+
+func TestDeleteRoomNotFound(t *testing.T) {
+	handler := NewHandler(store.NewMemoryStore())
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodDelete,
+		"/rooms/missing",
+		nil,
+		map[string]string{"X-Admin-Token": "some-token"},
+		http.StatusNotFound,
+	)
+}
+
+func TestRotateAdminTokenFlow(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR"},
+		nil,
+		http.StatusCreated,
+	)
+
+	rotatePath := "/rooms/" + created.Room.ID + "/admin-token/rotate"
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPost,
+		rotatePath,
+		nil,
+		nil,
+		http.StatusUnauthorized,
+	)
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPost,
+		rotatePath,
+		nil,
+		map[string]string{"X-Admin-Token": "wrong-token"},
+		http.StatusUnauthorized,
+	)
+
+	rotated := doJSON[createRoomResponse](
+		t,
+		handler,
+		http.MethodPost,
+		rotatePath,
+		nil,
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusOK,
+	)
+	if rotated.AdminToken == "" || rotated.AdminToken == created.AdminToken {
+		t.Fatalf("expected a new admin token, got %q", rotated.AdminToken)
+	}
+	if rotated.Room.ID != created.Room.ID {
+		t.Fatalf("expected room %s, got %s", created.Room.ID, rotated.Room.ID)
+	}
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPatch,
+		"/rooms/"+created.Room.ID,
+		map[string]any{"title": "Old token"},
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusUnauthorized,
+	)
+
+	updated := doJSON[domain.Room](
+		t,
+		handler,
+		http.MethodPatch,
+		"/rooms/"+created.Room.ID,
+		map[string]any{"title": "New token"},
+		map[string]string{"X-Admin-Token": rotated.AdminToken},
+		http.StatusOK,
+	)
+	if updated.Title != "New token" {
+		t.Fatalf("expected updated title, got %q", updated.Title)
+	}
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodGet,
+		rotatePath,
+		nil,
+		map[string]string{"X-Admin-Token": rotated.AdminToken},
+		http.StatusMethodNotAllowed,
+	)
+}
+
+func TestRotateAdminTokenAllowedWhenFinalized(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, err := memoryStore.CreateRoom(domain.Room{
+		Title:    "Dinner",
+		Currency: "EUR",
+		Status:   domain.RoomStatusFinalized,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rotated := doJSON[createRoomResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+room.ID+"/admin-token/rotate",
+		nil,
+		map[string]string{"X-Admin-Token": room.AdminToken},
+		http.StatusOK,
+	)
+	if rotated.AdminToken == "" || rotated.AdminToken == room.AdminToken {
+		t.Fatalf("expected a new admin token, got %q", rotated.AdminToken)
+	}
+}
+
+func TestCreateRoomRejectsOversizedBody(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	payload := `{"title":"` + strings.Repeat("a", 2048) + `","currency":"EUR"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/rooms",
+		http.MaxBytesReader(
+			recorder,
+			io.NopCloser(strings.NewReader(payload)),
+			512,
+		),
+	)
+	request.Header.Set("Content-Type", "application/json")
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf(
+			"expected 413, got %d: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+	if !strings.Contains(recorder.Body.String(), "request body too large") {
+		t.Fatalf("unexpected body: %s", recorder.Body.String())
 	}
 }
 

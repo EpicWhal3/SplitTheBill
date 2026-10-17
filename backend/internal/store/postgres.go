@@ -837,6 +837,51 @@ func (s *PostgresStore) DeleteAssignment(
 	return nil
 }
 
+func (s *PostgresStore) DeleteRoom(roomID string) error {
+	ctx := context.Background()
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`DELETE FROM rooms WHERE id = $1`,
+		roomID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return ErrorNotFound
+	}
+
+	return nil
+}
+
+func (s *PostgresStore) RotateAdminToken(
+	roomID string,
+) (domain.Room, error) {
+	ctx := context.Background()
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`
+			UPDATE rooms
+			SET admin_token = $2, updated_at = now()
+			WHERE id = $1
+		`,
+		roomID,
+		newToken(),
+	)
+	if err != nil {
+		return domain.Room{}, err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return domain.Room{}, ErrorNotFound
+	}
+
+	return s.GetRoom(roomID)
+}
+
 func (s *PostgresStore) ensureRoomExists(
 	ctx context.Context,
 	roomID string,

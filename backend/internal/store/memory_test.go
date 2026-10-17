@@ -415,3 +415,129 @@ func TestMemoryStoreFindParticipantByTokenRejectsEmptyToken(t *testing.T) {
 		t.Fatalf("expected ErrorParticipantNotFound, got %v", err)
 	}
 }
+
+func TestMemoryStoreDeleteRoomCascades(t *testing.T) {
+	appStore := NewMemoryStore()
+
+	room, err := appStore.CreateRoom(domain.Room{
+		Title:    "Dinner",
+		Currency: "EUR",
+		Status:   domain.RoomStatusFinalized,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	participant, err := appStore.AddParticipant(
+		room.ID,
+		domain.Participant{Name: "Аня"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := appStore.AddItem(room.ID, domain.ReceiptItem{
+		Name:      "Pizza",
+		Quantity:  1,
+		UnitPrice: 1000,
+		Total:     1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID:        item.ID,
+		ParticipantID: participant.ID,
+		Weight:        1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := appStore.DeleteRoom(room.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := appStore.GetRoom(room.ID); !errors.Is(err, ErrorNotFound) {
+		t.Fatalf("GetRoom: expected ErrorNotFound, got %v", err)
+	}
+	if _, err := appStore.ListParticipants(room.ID); !errors.Is(err, ErrorNotFound) {
+		t.Fatalf("ListParticipants: expected ErrorNotFound, got %v", err)
+	}
+	if _, err := appStore.ListItems(room.ID); !errors.Is(err, ErrorNotFound) {
+		t.Fatalf("ListItems: expected ErrorNotFound, got %v", err)
+	}
+	if _, err := appStore.ListAssignments(room.ID); !errors.Is(err, ErrorNotFound) {
+		t.Fatalf("ListAssignments: expected ErrorNotFound, got %v", err)
+	}
+
+	if _, ok := appStore.rooms[room.ID]; ok {
+		t.Fatal("room must be removed from the rooms map")
+	}
+	if _, ok := appStore.participants[room.ID]; ok {
+		t.Fatal("participants must be removed with the room")
+	}
+	if _, ok := appStore.items[room.ID]; ok {
+		t.Fatal("items must be removed with the room")
+	}
+	if _, ok := appStore.assignments[room.ID]; ok {
+		t.Fatal("assignments must be removed with the room")
+	}
+}
+
+func TestMemoryStoreDeleteRoomNotFound(t *testing.T) {
+	appStore := NewMemoryStore()
+
+	if err := appStore.DeleteRoom("missing"); !errors.Is(err, ErrorNotFound) {
+		t.Fatalf("expected ErrorNotFound, got %v", err)
+	}
+}
+
+func TestMemoryStoreRotateAdminToken(t *testing.T) {
+	appStore := NewMemoryStore()
+
+	room, err := appStore.CreateRoom(domain.Room{
+		Title:    "Dinner",
+		Currency: "EUR",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousToken := room.AdminToken
+	if previousToken == "" {
+		t.Fatal("expected initial admin token")
+	}
+
+	rotated, err := appStore.RotateAdminToken(room.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.ID != room.ID {
+		t.Fatalf("expected room %s, got %s", room.ID, rotated.ID)
+	}
+	if rotated.AdminToken == "" || rotated.AdminToken == previousToken {
+		t.Fatalf("expected a new admin token, got %q", rotated.AdminToken)
+	}
+
+	stored, err := appStore.GetRoom(room.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AdminToken != rotated.AdminToken {
+		t.Fatalf("expected stored token %q, got %q", rotated.AdminToken, stored.AdminToken)
+	}
+
+	rotatedAgain, err := appStore.RotateAdminToken(room.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotatedAgain.AdminToken == rotated.AdminToken {
+		t.Fatal("token rotation must generate a different token every time")
+	}
+}
+
+func TestMemoryStoreRotateAdminTokenNotFound(t *testing.T) {
+	appStore := NewMemoryStore()
+
+	if _, err := appStore.RotateAdminToken("missing"); !errors.Is(err, ErrorNotFound) {
+		t.Fatalf("expected ErrorNotFound, got %v", err)
+	}
+}

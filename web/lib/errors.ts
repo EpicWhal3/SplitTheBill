@@ -31,6 +31,10 @@ const translations: Record<string, string> = {
   "method not allowed": "Это действие здесь недоступно.",
   "route not found": "Запрошенный раздел не найден.",
   "invalid json": "Не удалось прочитать данные запроса.",
+  "request body too large":
+    "Запрос слишком большой. Уменьшите объём данных и попробуйте снова.",
+  "rate limit exceeded":
+    "Слишком много запросов. Подождите немного и попробуйте снова.",
   "title is required": "Укажите название комнаты.",
   "title is too long": "Название комнаты слишком длинное.",
   "currency must be a three-letter code":

@@ -63,6 +63,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.getRoom(w, roomID)
 		case http.MethodPatch:
 			h.updateRoom(w, r, roomID)
+		case http.MethodDelete:
+			h.deleteRoom(w, r, roomID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -161,6 +163,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
 			return
+
+		case "admin-token":
+			if resourceID != "rotate" {
+				writeError(w, http.StatusNotFound, "route not found")
+				return
+			}
+
+			if r.Method == http.MethodPost {
+				h.rotateAdminToken(w, r, roomID)
+				return
+			}
+
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
 		}
 	}
 
@@ -191,7 +207,7 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 	var req createRoomRequest
 
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 
@@ -268,7 +284,7 @@ func (h *Handler) updateRoom(w http.ResponseWriter, r *http.Request, roomID stri
 
 	var req updateRoomRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 
@@ -406,7 +422,10 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request, roomID string) 
 		select {
 		case <-r.Context().Done():
 			return
-		case <-subscriber:
+		case _, ok := <-subscriber:
+			if !ok {
+				return
+			}
 			if err := writeEvent(); err != nil {
 				return
 			}
@@ -426,7 +445,7 @@ func (h *Handler) addParticipant(w http.ResponseWriter, r *http.Request, roomID 
 
 	var req participantRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -457,7 +476,7 @@ func (h *Handler) joinParticipant(w http.ResponseWriter, r *http.Request, roomID
 
 	var req participantRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -486,7 +505,7 @@ func (h *Handler) updateParticipant(w http.ResponseWriter, r *http.Request, room
 
 	var req participantRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -538,7 +557,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request, roomID string)
 
 	var req addItemRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -584,7 +603,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request, roomID, ite
 
 	var req updateItemRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 	if req.Name != nil {
@@ -638,7 +657,7 @@ func (h *Handler) addAssignment(w http.ResponseWriter, r *http.Request, roomID s
 
 	var req addAssignmentRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 	req.ItemID = strings.TrimSpace(req.ItemID)
@@ -700,7 +719,7 @@ func (h *Handler) selectItem(w http.ResponseWriter, r *http.Request, roomID, ite
 
 	req := selectionRequest{Weight: 1}
 	if err := readOptionalJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+		writeReadJSONError(w, err)
 		return
 	}
 	if err := validateWeight(req.Weight); err != nil {
@@ -835,6 +854,38 @@ func (h *Handler) reopen(w http.ResponseWriter, r *http.Request, roomID string) 
 	}
 	h.hub.publish(roomID)
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *Handler) deleteRoom(w http.ResponseWriter, r *http.Request, roomID string) {
+	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+		return
+	}
+
+	if err := h.store.DeleteRoom(roomID); err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+
+	h.hub.removeRoom(roomID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) rotateAdminToken(w http.ResponseWriter, r *http.Request, roomID string) {
+	if _, ok := h.authorizeAdmin(w, r, roomID); !ok {
+		return
+	}
+
+	updated, err := h.store.RotateAdminToken(roomID)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+
+	h.hub.publish(roomID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room":        updated,
+		"admin_token": updated.AdminToken,
+	})
 }
 
 func (h *Handler) calculate(w http.ResponseWriter, roomID string) {
@@ -1108,14 +1159,16 @@ func nonNilAssignments(value []domain.ItemAssignment) []domain.ItemAssignment {
 	return value
 }
 
+var errRequestBodyTooLarge = errors.New("request body too large")
+
 func readJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
-		return err
+		return normalizeBodyReadError(err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("body must contain a single json value")
+		return normalizeBodyReadError(err)
 	}
 	return nil
 }
@@ -1130,12 +1183,28 @@ func readOptionalJSON(r *http.Request, dst any) error {
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
-		return err
+		return normalizeBodyReadError(err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("body must contain a single json value")
+		return normalizeBodyReadError(err)
 	}
 	return nil
+}
+
+func normalizeBodyReadError(err error) error {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return errRequestBodyTooLarge
+	}
+	return err
+}
+
+func writeReadJSONError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errRequestBodyTooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid json")
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
