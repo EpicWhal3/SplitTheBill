@@ -21,7 +21,8 @@ type Store interface {
 	RotateAdminToken(roomID string) (domain.Room, error)
 
 	AddParticipant(roomID string, participant domain.Participant) (domain.Participant, error)
-	JoinParticipant(roomID string, name string) (domain.Participant, error)
+	JoinParticipantByToken(roomID string, token string) (domain.Participant, error)
+	RotateParticipantToken(roomID string, participantID string) (domain.Participant, error)
 	FindParticipantByToken(roomID string, token string) (domain.Participant, error)
 	ListParticipants(roomID string) ([]domain.Participant, error)
 	UpdateParticipant(roomID string, participant domain.Participant) (domain.Participant, error)

@@ -33,23 +33,29 @@ func TestMemoryStoreCollaborationFlow(t *testing.T) {
 	if participant.Claimed {
 		t.Fatal("organizer-created participant must be unclaimed")
 	}
+	if participant.AccessToken == "" {
+		t.Fatal("organizer-created participant must receive an invite token")
+	}
 
-	joined, err := appStore.JoinParticipant(room.ID, "аня")
+	joined, err := appStore.JoinParticipantByToken(
+		room.ID,
+		participant.AccessToken,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !joined.Claimed || joined.AccessToken == "" {
-		t.Fatal("joined participant must receive a token")
+	if !joined.Claimed || joined.AccessToken != participant.AccessToken {
+		t.Fatal("joined participant must be claimed with the invite token")
 	}
 
 	if joined.ID != participant.ID {
 		t.Fatalf("expected existing participant %s to be claimed, got %s", participant.ID, joined.ID)
 	}
 
-	_, err = appStore.JoinParticipant(room.ID, "Аня")
-	if !errors.Is(err, ErrorNameTaken) {
-		t.Fatalf("expected ErrorNameTaken, got %v", err)
+	_, err = appStore.JoinParticipantByToken(room.ID, "unknown-token")
+	if !errors.Is(err, ErrorParticipantNotFound) {
+		t.Fatalf("expected ErrorParticipantNotFound, got %v", err)
 	}
 
 	found, err := appStore.FindParticipantByToken(room.ID, joined.AccessToken)
@@ -374,7 +380,7 @@ func TestMemoryStoreUnknownRoomReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreJoinParticipantCreatesNewWhenUnknown(t *testing.T) {
+func TestMemoryStoreJoinParticipantByTokenRejectsUnknownToken(t *testing.T) {
 	appStore := NewMemoryStore()
 
 	room, err := appStore.CreateRoom(domain.Room{Title: "Dinner", Currency: "EUR"})
@@ -382,20 +388,52 @@ func TestMemoryStoreJoinParticipantCreatesNewWhenUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	joined, err := appStore.JoinParticipant(room.ID, "Новый")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !joined.Claimed || joined.AccessToken == "" {
-		t.Fatalf("joined participant must be claimed with token: %#v", joined)
+	if _, err := appStore.JoinParticipantByToken(room.ID, "unknown-token"); !errors.Is(err, ErrorParticipantNotFound) {
+		t.Fatalf("expected ErrorParticipantNotFound, got %v", err)
 	}
 
 	participants, err := appStore.ListParticipants(room.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(participants) != 1 {
-		t.Fatalf("expected single participant, got %#v", participants)
+	if len(participants) != 0 {
+		t.Fatalf("join must not create participants, got %#v", participants)
+	}
+}
+
+func TestMemoryStoreRotateParticipantToken(t *testing.T) {
+	appStore := NewMemoryStore()
+
+	room, err := appStore.CreateRoom(domain.Room{Title: "Dinner", Currency: "EUR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	participant, err := appStore.AddParticipant(
+		room.ID,
+		domain.Participant{Name: "Аня"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rotated, err := appStore.RotateParticipantToken(room.ID, participant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.AccessToken == "" || rotated.AccessToken == participant.AccessToken {
+		t.Fatalf("expected a fresh invite token, got %#v", rotated)
+	}
+
+	if _, err := appStore.JoinParticipantByToken(room.ID, participant.AccessToken); !errors.Is(err, ErrorParticipantNotFound) {
+		t.Fatalf("old invite token must be rejected, got %v", err)
+	}
+
+	joined, err := appStore.JoinParticipantByToken(room.ID, rotated.AccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.ID != participant.ID || !joined.Claimed {
+		t.Fatalf("expected rotated token to claim the participant, got %#v", joined)
 	}
 }
 

@@ -27,10 +27,12 @@ import {
   joinRoom,
   openRoomSelections,
   type Participant,
+  participantInviteLink,
   type ReceiptItem,
   reopenRoom,
   type Room,
   rotateAdminToken,
+  rotateParticipantInvite,
   selectItem,
   unselectItem,
   updateItem,
@@ -75,7 +77,9 @@ export default function RoomPage({ params }: Props) {
     useState<ParticipantSession | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
-  const [joinName, setJoinName] = useState("");
+  const [participantInvites, setParticipantInvites] = useState<
+    Record<string, string>
+  >({});
   const [participantName, setParticipantName] = useState("");
   const [itemName, setItemName] = useState("");
   const [itemQuantity, setItemQuantity] = useState("1");
@@ -155,17 +159,71 @@ export default function RoomPage({ params }: Props) {
     [],
   );
 
+  const joinWithInviteToken = useCallback(
+    async (id: string, token: string) => {
+      setLoading(true);
+      setError("");
+
+      try {
+        const result = await joinRoom(id, { token });
+        const session: ParticipantSession = {
+          participantId: result.participant.id,
+          participantToken: result.participant_token,
+          name: result.participant.name,
+        };
+
+        saveParticipantSession(id, session);
+        setParticipantSession(session);
+        setParticipants((prev) =>
+          prev.some((p) => p.id === result.participant.id)
+            ? prev.map((p) =>
+                p.id === result.participant.id ? result.participant : p,
+              )
+            : [...prev, result.participant],
+        );
+        await loadRoomData(id, false);
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Не удалось войти по персональной ссылке",
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadRoomData],
+  );
+
   useEffect(() => {
     params.then((resolved) => {
-      const id = resolved.roomId;
+      const resolvedRoomId = resolved.roomId;
+      const storedAdminToken = loadAdminToken(resolvedRoomId);
+      const storedSession = loadParticipantSession(resolvedRoomId);
+      const inviteToken =
+        new URLSearchParams(window.location.search).get("token")?.trim() ?? "";
 
-      setRoomId(id);
-      setAdminToken(loadAdminToken(id));
-      setParticipantSession(loadParticipantSession(id));
-      setShareUrl(`${window.location.origin}/rooms/${id}`);
+      setRoomId(resolvedRoomId);
+      setAdminToken(storedAdminToken);
+      setParticipantSession(storedSession);
+      setShareUrl(`${window.location.origin}/rooms/${resolvedRoomId}`);
       setAuthReady(true);
+
+      if (!inviteToken) {
+        return;
+      }
+
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.hash}`,
+      );
+
+      if (!storedSession && !storedAdminToken) {
+        void joinWithInviteToken(resolvedRoomId, inviteToken);
+      }
     });
-  }, [params]);
+  }, [joinWithInviteToken, params]);
 
   useEffect(() => {
     if (roomId) {
@@ -253,7 +311,7 @@ export default function RoomPage({ params }: Props) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setParticipantSession(null);
     setError(
-      "Участник был удалён из комнаты. Войдите снова под другим именем.",
+      "Участник был удалён из комнаты. Попросите организатора прислать новую персональную ссылку.",
     );
   }, [participantSession, participants, room]);
 
@@ -327,38 +385,6 @@ export default function RoomPage({ params }: Props) {
     }
 
     return parsed;
-  }
-
-  async function handleJoin(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const name = joinName.trim();
-    if (!roomId || !name) {
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-
-    try {
-      const result = await joinRoom(roomId, { name });
-      const session: ParticipantSession = {
-        participantId: result.participant.id,
-        participantToken: result.participant_token,
-        name: result.participant.name,
-      };
-
-      saveParticipantSession(roomId, session);
-      setParticipantSession(session);
-      setJoinName("");
-      await loadRoomData(roomId, false);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Не удалось войти в комнату",
-      );
-    } finally {
-      setLoading(false);
-    }
   }
 
   async function saveParticipantWeight(item: ReceiptItem, weightValue: string) {
@@ -446,16 +472,6 @@ export default function RoomPage({ params }: Props) {
     }
   }
 
-  function handleLeaveParticipantMode() {
-    if (!roomId) {
-      return;
-    }
-
-    clearParticipantSession(roomId);
-    setParticipantSession(null);
-    setError("");
-  }
-
   async function handleCopyLink() {
     if (!shareUrl) {
       return;
@@ -490,6 +506,64 @@ export default function RoomPage({ params }: Props) {
     }
 
     await handleCopyLink();
+  }
+
+  async function handleCopyInvite(participant: Participant) {
+    const inviteToken = participantInvites[participant.id];
+
+    if (!roomId || !inviteToken) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(
+        participantInviteLink(roomId, inviteToken),
+      );
+      setCopyState(`Ссылка для «${participant.name}» скопирована`);
+    } catch {
+      setCopyState("Не удалось скопировать автоматически");
+    }
+
+    window.setTimeout(() => setCopyState(""), 2500);
+  }
+
+  async function handleRegenerateInvite(participant: Participant) {
+    if (
+      !roomId ||
+      !adminToken ||
+      !window.confirm(
+        `Создать новую персональную ссылку для «${participant.name}»? Старая ссылка перестанет работать.`,
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const result = await rotateParticipantInvite(
+        roomId,
+        participant.id,
+        adminToken,
+      );
+
+      setParticipantInvites((prev) => ({
+        ...prev,
+        [result.participant.id]: result.participant_token,
+      }));
+      setCopyState(`Новая ссылка для «${result.participant.name}» готова`);
+      await loadRoomData(roomId, false);
+      window.setTimeout(() => setCopyState(""), 2500);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Не удалось создать персональную ссылку",
+      );
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleUpdateCharges(event: SubmitEvent<HTMLFormElement>) {
@@ -536,16 +610,43 @@ export default function RoomPage({ params }: Props) {
 
   async function handleAddParticipant(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
+
     const name = participantName.trim();
-    if (!name) {
+
+    if (!roomId || !adminToken || !name) {
       return;
     }
 
-    const success = await runAdminMutation(() =>
-      addParticipant(roomId, adminToken, { name }),
-    );
-    if (success) {
+    setLoading(true);
+    setError("");
+    setCopyState("");
+
+    try {
+      const result = await addParticipant(roomId, adminToken, { name });
+
+      setParticipants((prev) =>
+        prev.some((p) => p.id === result.participant.id)
+          ? prev.map((p) =>
+              p.id === result.participant.id ? result.participant : p,
+            )
+          : [...prev, result.participant],
+      );
+      setParticipantInvites((prev) => ({
+        ...prev,
+        [result.participant.id]: result.participant_token,
+      }));
       setParticipantName("");
+      setCopyState(
+        `Участник «${result.participant.name}» добавлен — скопируйте персональную ссылку в таблице.`,
+      );
+      await loadRoomData(roomId, true);
+      setCalculation(null);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Не удалось добавить участника",
+      );
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -970,6 +1071,7 @@ export default function RoomPage({ params }: Props) {
           expectedTotal={expectedTotal}
           payerParticipantId={payerParticipantId}
           participantName={participantName}
+          participantInvites={participantInvites}
           itemName={itemName}
           itemQuantity={itemQuantity}
           itemPrice={itemPrice}
@@ -996,6 +1098,10 @@ export default function RoomPage({ params }: Props) {
           onSetAdminWeight={setAdminWeight}
           onUpdateCharges={handleUpdateCharges}
           onAddParticipant={handleAddParticipant}
+          onCopyInvite={(participant) => void handleCopyInvite(participant)}
+          onRegenerateInvite={(participant) =>
+            void handleRegenerateInvite(participant)
+          }
           onEditParticipant={(participant) =>
             void handleEditParticipant(participant)
           }
@@ -1023,12 +1129,9 @@ export default function RoomPage({ params }: Props) {
           participantPreview={participantPreview}
           participantWeights={participantWeights}
           calculation={calculation}
-          joinName={joinName}
           loading={loading}
           selectionLoadingId={selectionLoadingId}
           payerName={payer?.name ?? ""}
-          onSetJoinName={setJoinName}
-          onJoin={handleJoin}
           onCopyParticipantSummary={() => void handleCopyParticipantSummary()}
           onToggleSelection={(item) => void handleToggleSelection(item)}
           onWeightChange={(itemId, value) =>
@@ -1040,7 +1143,6 @@ export default function RoomPage({ params }: Props) {
           onSaveWeight={(item, value) =>
             void saveParticipantWeight(item, value)
           }
-          onLeave={handleLeaveParticipantMode}
           onRefresh={() => void loadRoomData(roomId, false)}
         />
       )}
@@ -1069,6 +1171,7 @@ type AdminViewProps = {
   expectedTotal: string;
   payerParticipantId: string;
   participantName: string;
+  participantInvites: Record<string, string>;
   itemName: string;
   itemQuantity: string;
   itemPrice: string;
@@ -1095,6 +1198,8 @@ type AdminViewProps = {
   onSetAdminWeight: (value: string) => void;
   onUpdateCharges: (event: SubmitEvent<HTMLFormElement>) => void;
   onAddParticipant: (event: SubmitEvent<HTMLFormElement>) => void;
+  onCopyInvite: (participant: Participant) => void;
+  onRegenerateInvite: (participant: Participant) => void;
   onEditParticipant: (participant: Participant) => void;
   onDeleteParticipant: (participant: Participant) => void;
   onAddItem: (event: SubmitEvent<HTMLFormElement>) => void;
@@ -1114,7 +1219,7 @@ function AdminView(props: AdminViewProps) {
     <>
       <section className="card share-card">
         <div>
-          <p className="eyebrow">Ссылка для участников</p>
+          <p className="eyebrow">Ссылка на комнату</p>
           <p className="share-url">{props.shareUrl}</p>
           <div className="actions">
             <button type="button" onClick={props.onCopyLink}>
@@ -1128,6 +1233,11 @@ function AdminView(props: AdminViewProps) {
               Поделиться
             </button>
           </div>
+          <p className="muted">
+            Эта ссылка открывает комнату только для просмотра. Чтобы участник
+            мог выбирать позиции, отправьте ему персональную ссылку из таблицы
+            ниже.
+          </p>
         </div>
         {props.qrCodeUrl && (
           /* eslint-disable-next-line @next/next/no-img-element -- QR-код приходит как data URL, оптимизация next/image здесь не нужна. */
@@ -1241,6 +1351,7 @@ function AdminView(props: AdminViewProps) {
               <tr>
                 <th>Имя</th>
                 <th>Вошёл по ссылке</th>
+                <th>Персональная ссылка</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -1249,6 +1360,31 @@ function AdminView(props: AdminViewProps) {
                 <tr key={participant.id}>
                   <td>{participant.name}</td>
                   <td>{participant.claimed ? "Да" : "Нет"}</td>
+                  <td>
+                    <div className="actions">
+                      {props.participantInvites[participant.id] ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => props.onCopyInvite(participant)}
+                        >
+                          Скопировать
+                        </button>
+                      ) : (
+                        <span className="muted">Ещё не создана</span>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={locked || props.loading}
+                        onClick={() => props.onRegenerateInvite(participant)}
+                      >
+                        {props.participantInvites[participant.id]
+                          ? "Новая ссылка"
+                          : "Создать ссылку"}
+                      </button>
+                    </div>
+                  </td>
                   <td>
                     <div className="actions">
                       <button
@@ -1548,17 +1684,13 @@ type ParticipantViewProps = {
   participantPreview: ReturnType<typeof calculateParticipantPreview> | null;
   participantWeights: WeightDrafts;
   calculation: CalculateResponse | null;
-  joinName: string;
   loading: boolean;
   selectionLoadingId: string;
   payerName: string;
-  onSetJoinName: (value: string) => void;
-  onJoin: (event: SubmitEvent<HTMLFormElement>) => void;
   onCopyParticipantSummary: () => void;
   onToggleSelection: (item: ReceiptItem) => void;
   onWeightChange: (itemId: string, value: string) => void;
   onSaveWeight: (item: ReceiptItem, value: string) => void;
-  onLeave: () => void;
   onRefresh: () => void;
 };
 
@@ -1567,22 +1699,20 @@ function ParticipantView(props: ParticipantViewProps) {
     return (
       <section className="card join-card">
         <p className="eyebrow">Вход в комнату</p>
-        <h2>Как вас зовут?</h2>
+        <h2>Нужна персональная ссылка</h2>
         {props.room.status === "finalized" ? (
           <p>Распределение уже завершено. Войти новым участником нельзя.</p>
         ) : (
-          <form onSubmit={props.onJoin} className="grid grid-2">
-            <label>
-              Имя
-              <input
-                value={props.joinName}
-                onChange={(event) => props.onSetJoinName(event.target.value)}
-              />
-            </label>
-            <button disabled={props.loading || !props.joinName.trim()}>
-              Войти
-            </button>
-          </form>
+          <>
+            <p>
+              Организатор добавляет участников и отправляет каждому личную
+              ссылку. Откройте её на своём устройстве — браузер запомнит, кто вы,
+              и больше не спросит имя.
+            </p>
+            <p className="muted">
+              Если ссылка не открывается, попросите организатора выпустить новую.
+            </p>
+          </>
         )}
       </section>
     );
@@ -1616,10 +1746,7 @@ function ParticipantView(props: ParticipantViewProps) {
             <p>Загрузка результата...</p>
           )}
         </section>
-        <ParticipantFooter
-          onRefresh={props.onRefresh}
-          onLeave={props.onLeave}
-        />
+        <ParticipantFooter onRefresh={props.onRefresh} />
       </>
     );
   }
@@ -1635,10 +1762,7 @@ function ParticipantView(props: ParticipantViewProps) {
             открытия распределения.
           </p>
         </section>
-        <ParticipantFooter
-          onRefresh={props.onRefresh}
-          onLeave={props.onLeave}
-        />
+        <ParticipantFooter onRefresh={props.onRefresh} />
       </>
     );
   }
@@ -1795,7 +1919,7 @@ function ParticipantView(props: ParticipantViewProps) {
         </p>
       </section>
 
-      <ParticipantFooter onRefresh={props.onRefresh} onLeave={props.onLeave} />
+      <ParticipantFooter onRefresh={props.onRefresh} />
     </>
   );
 }
@@ -2126,20 +2250,11 @@ function BreakdownValue({
   );
 }
 
-function ParticipantFooter({
-  onRefresh,
-  onLeave,
-}: {
-  onRefresh: () => void;
-  onLeave: () => void;
-}) {
+function ParticipantFooter({ onRefresh }: { onRefresh: () => void }) {
   return (
     <div className="participant-footer">
       <button type="button" className="secondary" onClick={onRefresh}>
         Обновить сейчас
-      </button>
-      <button type="button" className="link-button" onClick={onLeave}>
-        Выйти из участника
       </button>
     </div>
   );

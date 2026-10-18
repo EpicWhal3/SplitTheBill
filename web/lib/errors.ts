@@ -18,7 +18,11 @@ const translations: Record<string, string> = {
   "organizer access required":
     "Нужны права организатора. Откройте комнату по ссылке с ключом организатора.",
   "participant session is invalid":
-    "Сессия участника недействительна. Войдите в комнату заново.",
+    "Сессия участника недействительна. Откройте персональную ссылку от организатора заново.",
+  "invite token is required":
+    "Без персональной ссылки войти нельзя. Попросите организатора прислать её.",
+  "invalid participant invite token":
+    "Персональная ссылка недействительна. Попросите организатора выпустить новую.",
   "participant name is already taken":
     "Такое имя уже занято в этой комнате. Выберите другое.",
   "item does not exist in this room":

@@ -78,6 +78,8 @@ export type JoinRoomResponse = {
   participant_token: string;
 };
 
+export type AddParticipantResponse = JoinRoomResponse;
+
 export type CalculateResponse = {
   room: Room;
   results: ParticipantResult[];
@@ -184,7 +186,7 @@ export function updateRoom(
 
 export function joinRoom(
   roomId: string,
-  payload: { name: string },
+  payload: { token: string },
 ): Promise<JoinRoomResponse> {
   return request<JoinRoomResponse>(`/rooms/${id(roomId)}/join`, {
     method: "POST",
@@ -196,12 +198,37 @@ export function addParticipant(
   roomId: string,
   adminToken: string,
   payload: { name: string },
-): Promise<Participant> {
-  return request<Participant>(`/rooms/${id(roomId)}/participants`, {
+): Promise<AddParticipantResponse> {
+  return request<AddParticipantResponse>(`/rooms/${id(roomId)}/participants`, {
     method: "POST",
     adminToken,
     body: JSON.stringify(payload),
   });
+}
+
+export function rotateParticipantInvite(
+  roomId: string,
+  participantId: string,
+  adminToken: string,
+): Promise<AddParticipantResponse> {
+  return request<AddParticipantResponse>(
+    `/rooms/${id(roomId)}/participants/${id(participantId)}/invite`,
+    {
+      method: "POST",
+      adminToken,
+    },
+  );
+}
+
+export function participantInviteLink(
+  roomId: string,
+  participantToken: string,
+): string {
+  if (typeof window === "undefined") {
+    return `/rooms/${id(roomId)}?token=${id(participantToken)}`;
+  }
+
+  return `${window.location.origin}/rooms/${id(roomId)}?token=${id(participantToken)}`;
 }
 
 export function updateParticipant(

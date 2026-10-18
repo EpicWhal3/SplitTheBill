@@ -122,9 +122,39 @@ type createRoomResponse struct {
 	AdminToken string      `json:"admin_token"`
 }
 
-type joinResponse struct {
+type addParticipantResponse struct {
 	Participant      domain.Participant `json:"participant"`
 	ParticipantToken string             `json:"participant_token"`
+}
+
+type joinResponse = addParticipantResponse
+
+func inviteParticipant(
+	t *testing.T,
+	handler *Handler,
+	memoryStore *store.MemoryStore,
+	roomID string,
+	name string,
+) joinResponse {
+	t.Helper()
+
+	participant, err := memoryStore.AddParticipant(
+		roomID,
+		domain.Participant{Name: name},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return doJSON[joinResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+roomID+"/join",
+		map[string]any{"token": participant.AccessToken},
+		nil,
+		http.StatusCreated,
+	)
 }
 
 type calculationPayload struct {
@@ -169,7 +199,7 @@ func TestCollaborativeRoomLifecycle(t *testing.T) {
 		http.StatusUnauthorized,
 	)
 
-	participant := doJSON[domain.Participant](
+	participant := doJSON[addParticipantResponse](
 		t,
 		handler,
 		http.MethodPost,
@@ -178,16 +208,44 @@ func TestCollaborativeRoomLifecycle(t *testing.T) {
 		map[string]string{"X-Admin-Token": created.AdminToken},
 		http.StatusCreated,
 	)
+	if participant.ParticipantToken == "" {
+		t.Fatal("organizer must receive a personal invite token")
+	}
+
+	// Free-form name joins are not allowed: the participant must present the
+	// personal invite token that the organizer received.
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/join",
+		map[string]any{"name": "Аня"},
+		nil,
+		http.StatusBadRequest,
+	)
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/join",
+		map[string]any{"token": "not-a-real-token"},
+		nil,
+		http.StatusUnauthorized,
+	)
 
 	joined := doJSON[joinResponse](
 		t,
 		handler,
 		http.MethodPost,
 		"/rooms/"+created.Room.ID+"/join",
-		map[string]any{"name": "аня"},
+		map[string]any{"token": participant.ParticipantToken},
 		nil,
 		http.StatusCreated,
 	)
+	if joined.Participant.ID != participant.Participant.ID {
+		t.Fatalf("join must claim the invited participant: %#v", joined)
+	}
 
 	item := doJSON[domain.ReceiptItem](
 		t,
@@ -225,7 +283,7 @@ func TestCollaborativeRoomLifecycle(t *testing.T) {
 		map[string]string{"X-Participant-Token": joined.ParticipantToken},
 		http.StatusOK,
 	)
-	if selection.ParticipantID != participant.ID || selection.Weight != 2 {
+	if selection.ParticipantID != participant.Participant.ID || selection.Weight != 2 {
 		t.Fatalf("unexpected selection: %#v", selection)
 	}
 
@@ -247,12 +305,16 @@ func TestCollaborativeRoomLifecycle(t *testing.T) {
 		handler,
 		http.MethodPatch,
 		"/rooms/"+created.Room.ID,
-		map[string]any{"payer_participant_id": participant.ID},
+		map[string]any{"payer_participant_id": participant.Participant.ID},
 		map[string]string{"X-Admin-Token": created.AdminToken},
 		http.StatusOK,
 	)
-	if updatedRoom.PayerParticipantID != participant.ID {
-		t.Fatalf("expected payer %s, got %s", participant.ID, updatedRoom.PayerParticipantID)
+	if updatedRoom.PayerParticipantID != participant.Participant.ID {
+		t.Fatalf(
+			"expected payer %s, got %s",
+			participant.Participant.ID,
+			updatedRoom.PayerParticipantID,
+		)
 	}
 
 	finalized := doJSON[calculationPayload](
@@ -513,6 +575,83 @@ func TestOpenClaimingRequiresItems(t *testing.T) {
 	)
 }
 
+func TestParticipantInviteRotation(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR"},
+		nil,
+		http.StatusCreated,
+	)
+
+	added := doJSON[addParticipantResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/participants",
+		map[string]any{"name": "Аня"},
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusCreated,
+	)
+	if added.ParticipantToken == "" {
+		t.Fatal("expected the organizer to receive a personal invite token")
+	}
+
+	rotated := doJSON[addParticipantResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/participants/"+added.Participant.ID+"/invite",
+		nil,
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusOK,
+	)
+	if rotated.ParticipantToken == "" ||
+		rotated.ParticipantToken == added.ParticipantToken {
+		t.Fatalf("expected a fresh invite token, got %#v", rotated)
+	}
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/join",
+		map[string]any{"token": added.ParticipantToken},
+		nil,
+		http.StatusUnauthorized,
+	)
+
+	joined := doJSON[joinResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms/"+created.Room.ID+"/join",
+		map[string]any{"token": rotated.ParticipantToken},
+		nil,
+		http.StatusCreated,
+	)
+	if joined.Participant.ID != added.Participant.ID {
+		t.Fatalf(
+			"expected the invite to claim participant %q, got %q",
+			added.Participant.ID,
+			joined.Participant.ID,
+		)
+	}
+
+	participants, err := memoryStore.ListParticipants(created.Room.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(participants) != 1 || !participants[0].Claimed {
+		t.Fatalf("expected the invited participant to be claimed, got %#v", participants)
+	}
+}
+
 func TestOpenClaimingRequiresAdmin(t *testing.T) {
 	handler := NewHandler(store.NewMemoryStore())
 
@@ -590,15 +729,7 @@ func TestSelectionRejectedInDraftStatus(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusDraft,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -621,15 +752,7 @@ func TestSelectionAllowedInClaimingStatus(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -656,15 +779,7 @@ func TestSelectionWithWeight(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -691,15 +806,7 @@ func TestSelectionRejectsInvalidWeight(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -724,16 +831,19 @@ func TestSelectionRejectedAfterFinalization(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusFinalized,
 	})
-	joined := doJSON[joinResponse](
+	participant, _ := memoryStore.AddParticipant(
+		room.ID,
+		domain.Participant{Name: "Аня"},
+	)
+	doJSON[map[string]string](
 		t,
 		handler,
 		http.MethodPost,
 		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
+		map[string]any{"token": participant.AccessToken},
 		nil,
 		http.StatusConflict,
 	)
-	_ = joined
 
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
@@ -757,15 +867,7 @@ func TestUnselectRemovesAssignment(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -806,15 +908,7 @@ func TestUnselectMissingSelectionIsIdempotent(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -837,15 +931,7 @@ func TestUnselectTwiceIsIdempotent(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -896,15 +982,7 @@ func TestUnselectStillRequiresClaimingStatus(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusDraft,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})
@@ -1125,15 +1203,7 @@ func TestReopenAllowsSelectionsAndRefinalization(t *testing.T) {
 		t.Fatalf("unexpected reopened room: %#v", reopened)
 	}
 
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Anna"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Anna")
 	doJSON[domain.ItemAssignment](
 		t,
 		handler,
@@ -1358,15 +1428,7 @@ func TestParticipantCanUpdateOwnWeight(t *testing.T) {
 	room, _ := memoryStore.CreateRoom(domain.Room{
 		Title: "Dinner", Currency: "EUR", Status: domain.RoomStatusClaiming,
 	})
-	joined := doJSON[joinResponse](
-		t,
-		handler,
-		http.MethodPost,
-		"/rooms/"+room.ID+"/join",
-		map[string]any{"name": "Аня"},
-		nil,
-		http.StatusCreated,
-	)
+	joined := inviteParticipant(t, handler, memoryStore, room.ID, "Аня")
 	item, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
 		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
 	})

@@ -20,7 +20,10 @@
 * Деньги — `int64` в минорных единицах.
 * Два хранилища: PostgreSQL и in-memory (при пустом `DATABASE_URL`).
 * Миграции через `golang-migrate`, применяются автоматически при старте.
-  Вся схема описана в [`backend/migrations/000001_init.up.sql`](../backend/migrations/000001_init.up.sql).
+  Схема собрана из последовательных версий в [`backend/migrations`](../backend/migrations):
+  [`000001_init.up.sql`](../backend/migrations/000001_init.up.sql) — базовая схема,
+  [`000002_participant_claims.up.sql`](../backend/migrations/000002_participant_claims.up.sql) — флаг `claimed`.
+  Применённые миграции не редактируются: любое изменение схемы — новая версия.
 * Настраиваемый порт `PORT` и CORS через `ALLOWED_ORIGINS`.
 * Rate limiting (token bucket) через `RATE_LIMIT_REQUESTS_PER_SECOND` и
   `RATE_LIMIT_BURST` — превышение возвращает `429`.

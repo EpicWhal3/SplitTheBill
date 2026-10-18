@@ -108,16 +108,31 @@ SSE-поток. Без авторизации. Любой статус.
 Добавить участника. `X-Admin-Token`. Статусы `draft`/`claiming`.
 
 * Тело: `{name}`.
-* `201` — участник.
+* `201` — `{participant, participant_token}`. Персональная ссылка участника:
+  `/rooms/{roomId}?token={participant_token}`. Токен возвращается только в
+  ответе на этот запрос — сохраните ссылку или выпустите новую через
+  `POST /rooms/{roomId}/participants/{participantId}/invite`.
 * `400`, `401`, `404`, `409`.
 
 ### POST /rooms/{roomId}/join
 
-Присоединиться по имени. Без авторизации. Статусы `draft`/`claiming`.
+Обменять персональный инвайт-токен на сессию участника. Без авторизации.
+Статусы `draft`/`claiming`. Свободного входа по имени больше нет.
 
-* Тело: `{name}`.
-* `201` — `{participant, participant_token}`.
-* `400`, `404`, `409` (`finalized` или имя занято).
+* Тело: `{token}`.
+* `201` — `{participant, participant_token}`; участник помечается как `claimed`.
+* `400` — токен не передан (`invite token is required`).
+* `401` — токен неизвестен (`invalid participant invite token`).
+* `404` — комната не найдена.
+* `409` — комната `finalized`.
+
+### POST /rooms/{roomId}/participants/{participantId}/invite
+
+Выпустить новую персональную ссылку участника; предыдущая перестаёт работать.
+`X-Admin-Token`. Статусы `draft`/`claiming`.
+
+* `200` — `{participant, participant_token}`.
+* `401`, `404`, `409`.
 
 ### PATCH /rooms/{roomId}/participants/{participantId}
 

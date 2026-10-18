@@ -180,14 +180,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(parts) == 5 && parts[2] == "assignments" {
-		if r.Method == http.MethodDelete {
-			h.deleteAssignment(w, r, roomID, parts[3], parts[4])
+	if len(parts) == 5 {
+		switch {
+		case parts[2] == "assignments":
+			if r.Method == http.MethodDelete {
+				h.deleteAssignment(w, r, roomID, parts[3], parts[4])
+				return
+			}
+
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+
+		case parts[2] == "participants" && parts[4] == "invite":
+			if r.Method == http.MethodPost {
+				h.rotateParticipantToken(w, r, roomID, parts[3])
+				return
+			}
+
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
 
 	writeError(w, http.StatusNotFound, "route not found")
@@ -437,6 +449,10 @@ type participantRequest struct {
 	Name string `json:"name"`
 }
 
+type joinParticipantRequest struct {
+	Token string `json:"token"`
+}
+
 func (h *Handler) addParticipant(w http.ResponseWriter, r *http.Request, roomID string) {
 	room, ok := h.authorizeAdmin(w, r, roomID)
 	if !ok || !ensureMutable(w, room) {
@@ -460,7 +476,10 @@ func (h *Handler) addParticipant(w http.ResponseWriter, r *http.Request, roomID 
 		return
 	}
 	h.hub.publish(roomID)
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"participant":       created,
+		"participant_token": created.AccessToken,
+	})
 }
 
 func (h *Handler) joinParticipant(w http.ResponseWriter, r *http.Request, roomID string) {
@@ -474,24 +493,47 @@ func (h *Handler) joinParticipant(w http.ResponseWriter, r *http.Request, roomID
 		return
 	}
 
-	var req participantRequest
+	var req joinParticipantRequest
 	if err := readJSON(r, &req); err != nil {
 		writeReadJSONError(w, err)
 		return
 	}
-	req.Name = strings.TrimSpace(req.Name)
-	if err := validateParticipantName(req.Name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	req.Token = strings.TrimSpace(req.Token)
+	if req.Token == "" {
+		writeError(w, http.StatusBadRequest, "invite token is required")
 		return
 	}
 
-	participant, err := h.store.JoinParticipant(roomID, req.Name)
+	participant, err := h.store.JoinParticipantByToken(roomID, req.Token)
 	if err != nil {
+		if errors.Is(err, store.ErrorParticipantNotFound) {
+			writeError(w, http.StatusUnauthorized, "invalid participant invite token")
+			return
+		}
+
 		writeStoreError(w, err, "room not found")
 		return
 	}
 	h.hub.publish(roomID)
 	writeJSON(w, http.StatusCreated, map[string]any{
+		"participant":       participant,
+		"participant_token": participant.AccessToken,
+	})
+}
+
+func (h *Handler) rotateParticipantToken(w http.ResponseWriter, r *http.Request, roomID, participantID string) {
+	room, ok := h.authorizeAdmin(w, r, roomID)
+	if !ok || !ensureMutable(w, room) {
+		return
+	}
+
+	participant, err := h.store.RotateParticipantToken(roomID, participantID)
+	if err != nil {
+		writeStoreError(w, err, "participant not found")
+		return
+	}
+	h.hub.publish(roomID)
+	writeJSON(w, http.StatusOK, map[string]any{
 		"participant":       participant,
 		"participant_token": participant.AccessToken,
 	})

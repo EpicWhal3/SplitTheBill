@@ -285,8 +285,10 @@ paths:
       summary: Добавить участника (организатор)
       operationId: addParticipant
       description: |
-        Создаёт участника комнаты. Требует `X-Admin-Token`. Разрешено в статусах
-        `draft` и `claiming`; в `finalized` возвращает `409`.
+        Создаёт участника комнаты и сразу выпускает для него персональный
+        инвайт-токен. Требует `X-Admin-Token`. Разрешено в статусах `draft` и
+        `claiming`; в `finalized` возвращает `409`. Персональная ссылка участника
+        имеет вид `/rooms/{roomId}?token={participant_token}`.
       security:
         - AdminTokenAuth: [ ]
       requestBody:
@@ -297,11 +299,11 @@ paths:
               $ref: "#/components/schemas/ParticipantRequest"
       responses:
         "201":
-          description: Участник создан
+          description: Участник создан, инвайт-токен выпущен
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Participant"
+                $ref: "#/components/schemas/JoinRoomResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -315,18 +317,19 @@ paths:
       - $ref: "#/components/parameters/RoomId"
     post:
       tags: [ participants ]
-      summary: Присоединиться как участник
+      summary: Присоединиться по персональному инвайту
       operationId: joinRoom
       description: |
-        Присоединяет участника по имени и возвращает его токен
-        (`X-Participant-Token`). Не требует авторизации. Ошибка `409`, если
-        комната `finalized` или имя уже занято участником с токеном.
+        Обменивает персональный инвайт-токен на сессию участника и возвращает
+        его токен (`X-Participant-Token`). Не требует авторизации. Свободного
+        входа по имени нет: `400`, если токен не передан, `401`, если токен
+        неизвестен, `409`, если комната `finalized`.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ParticipantRequest"
+              $ref: "#/components/schemas/JoinRequest"
       responses:
         "201":
           description: Участник присоединился
@@ -336,6 +339,8 @@ paths:
                 $ref: "#/components/schemas/JoinRoomResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -386,6 +391,33 @@ paths:
       responses:
         "204":
           description: Участник удалён
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/participants/{participantId}/invite:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+      - $ref: "#/components/parameters/ParticipantId"
+    post:
+      tags: [ participants ]
+      summary: Выпустить новую персональную ссылку участника
+      operationId: rotateParticipantInvite
+      description: |
+        Генерирует новый инвайт-токен участника; предыдущая персональная ссылка
+        перестаёт работать. Требует `X-Admin-Token`. Разрешено в статусах
+        `draft` и `claiming`; в `finalized` возвращает `409`.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "200":
+          description: Новый инвайт-токен выпущен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinRoomResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -991,6 +1023,15 @@ components:
         admin_token:
           type: string
           description: Токен организатора; передаётся в заголовке `X-Admin-Token`.
+    JoinRequest:
+      type: object
+      required: [ token ]
+      properties:
+        token:
+          type: string
+          description: |
+            Персональный инвайт-токен участника из ссылки
+            `/rooms/{roomId}?token=...`.
     JoinRoomResponse:
       type: object
       required: [ participant, participant_token ]

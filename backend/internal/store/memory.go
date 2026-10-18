@@ -94,7 +94,10 @@ func (s *MemoryStore) AddParticipant(
 
 	participant.ID = newID()
 	participant.RoomID = roomID
-	participant.Claimed = participant.AccessToken != ""
+	participant.Claimed = false
+	if participant.AccessToken == "" {
+		participant.AccessToken = newToken()
+	}
 
 	s.participants[roomID] = append(
 		s.participants[roomID],
@@ -104,9 +107,41 @@ func (s *MemoryStore) AddParticipant(
 	return participant, nil
 }
 
-func (s *MemoryStore) JoinParticipant(
+func (s *MemoryStore) JoinParticipantByToken(
 	roomID string,
-	name string,
+	token string,
+) (domain.Participant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.rooms[roomID]; !ok {
+		return domain.Participant{}, ErrorNotFound
+	}
+
+	if token == "" {
+		return domain.Participant{}, ErrorParticipantNotFound
+	}
+
+	participants := s.participants[roomID]
+
+	for i, participant := range participants {
+		if participant.AccessToken != token {
+			continue
+		}
+
+		participant.Claimed = true
+		participants[i] = participant
+		s.participants[roomID] = participants
+
+		return participant, nil
+	}
+
+	return domain.Participant{}, ErrorParticipantNotFound
+}
+
+func (s *MemoryStore) RotateParticipantToken(
+	roomID string,
+	participantID string,
 ) (domain.Participant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,39 +153,18 @@ func (s *MemoryStore) JoinParticipant(
 	participants := s.participants[roomID]
 
 	for i, participant := range participants {
-		if !strings.EqualFold(
-			strings.TrimSpace(participant.Name),
-			strings.TrimSpace(name),
-		) {
+		if participant.ID != participantID {
 			continue
 		}
 
-		if participant.AccessToken != "" {
-			return domain.Participant{}, ErrorNameTaken
-		}
-
 		participant.AccessToken = newToken()
-		participant.Claimed = true
 		participants[i] = participant
 		s.participants[roomID] = participants
 
 		return participant, nil
 	}
 
-	participant := domain.Participant{
-		ID:          newID(),
-		RoomID:      roomID,
-		Name:        name,
-		Claimed:     true,
-		AccessToken: newToken(),
-	}
-
-	s.participants[roomID] = append(
-		s.participants[roomID],
-		participant,
-	)
-
-	return participant, nil
+	return domain.Participant{}, ErrorParticipantNotFound
 }
 
 func (s *MemoryStore) FindParticipantByToken(
