@@ -1,17 +1,47 @@
-# Getting Started
+# SplitTheBill — web
 
-First, run the development server:
+Frontend-приложение на Next.js (App Router) + React + TypeScript.
+
+## Разработка
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Приложение откроется на `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx` . The page auto-updates as you edit the file.
+## Переменные окружения
+
+Скопируйте пример и при необходимости отредактируйте:
+
+```bash
+cp .env.local.example .env.local
+```
+
+| Переменная            | Назначение               | По умолчанию            |
+|-----------------------|--------------------------|-------------------------|
+| `NEXT_PUBLIC_API_URL` | Базовый URL backend API. | `http://localhost:8080` |
+
+## Скрипты
+
+| Команда                | Назначение                                 |
+|------------------------|--------------------------------------------|
+| `npm run dev`          | Dev-сервер                                 |
+| `npm run build`        | Production-сборка (`output: "standalone"`) |
+| `npm run start`        | Запуск production-сборки                   |
+| `npm run lint`         | ESLint                                     |
+| `npm run test`         | Vitest (unit-тесты `lib`)                  |
+| `npm run format`       | Prettier (запись)                          |
+| `npm run format:check` | Prettier (проверка)                        |
+
+## Сборка Docker-образа
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_API_URL=http://localhost:8080 \
+  -t splitthebill-web .
+```
+
+Подробнее о полном развёртывании — в корневом
+[`README.md`](../README.md) и [`docs/deployment.md`](../docs/deployment.md).

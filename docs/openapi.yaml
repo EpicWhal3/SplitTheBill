@@ -1,0 +1,1035 @@
+openapi: 3.0.3
+info:
+  title: SplitTheBill API
+  version: 1.0.0
+  description: |
+    HTTP API сервиса SplitTheBill для разделения счёта в ресторане.
+
+    ## Соглашения
+
+    * Денежные суммы передаются **в минорных единицах** (`int64`): копейки,
+      центы и т.п. Например, `12.50` → `1250`.
+    * Авторизация организатора — заголовок `X-Admin-Token`.
+    * Авторизация участника — заголовок `X-Participant-Token`.
+    * Тело ошибки: `{"error": "сообщение"}`.
+
+    ## Глобальные коды ошибок
+
+    * `405` — метод не поддерживается для данного маршрута.
+    * `413` — тело запроса превышает `MAX_REQUEST_BODY_BYTES`.
+    * `429` — превышен rate limit (`RATE_LIMIT_REQUESTS_PER_SECOND` /
+      `RATE_LIMIT_BURST`).
+    * `500` — внутренняя ошибка сервера.
+
+    Эти коды могут вернуться с любого эндпоинта и не дублируются в каждой
+    операции. Остальные коды (400, 401, 404, 409) описаны у конкретных
+    операций.
+  contact:
+    name: SplitTheBill
+servers:
+  - url: http://localhost:8080
+    description: Локальный backend (docker compose)
+tags:
+  - name: system
+    description: Системные эндпоинты
+  - name: rooms
+    description: Комнаты и администрирование
+  - name: participants
+    description: Участники
+  - name: items
+    description: Позиции чека
+  - name: assignments
+    description: Назначения (организатор)
+  - name: selections
+    description: Выбор позиций (участник)
+  - name: calculation
+    description: Расчёт
+paths:
+  /health:
+    get:
+      tags: [ system ]
+      summary: Проверка живости сервиса
+      operationId: health
+      description: Возвращает `200` и тело `ok`. Не требует авторизации.
+      responses:
+        "200":
+          description: Сервис жив
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /rooms:
+    post:
+      tags: [ rooms ]
+      summary: Создать комнату
+      operationId: createRoom
+      description: |
+        Создаёт комнату в статусе `draft` и возвращает её вместе с админ-токеном
+        (заголовок `X-Admin-Token` для последующих запросов организатора).
+        Не требует авторизации.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRoomRequest"
+      responses:
+        "201":
+          description: Комната создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRoomResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /rooms/{roomId}:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    get:
+      tags: [ rooms ]
+      summary: Получить состояние комнаты
+      operationId: getRoom
+      description: |
+        Возвращает комнату, участников, позиции, назначения, промежуточный итог
+        и список неназначенных позиций. Не требует авторизации. Доступен в любом
+        статусе.
+      responses:
+        "200":
+          description: Состояние комнаты
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomDetails"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [ rooms ]
+      summary: Обновить параметры комнаты
+      operationId: updateRoom
+      description: |
+        Обновляет поля комнаты. Требует `X-Admin-Token`. Разрешено в статусах
+        `draft` и `claiming`; в `finalized` возвращает `409`.
+      security:
+        - AdminTokenAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRoomRequest"
+      responses:
+        "200":
+          description: Обновлённая комната
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Room"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [ rooms ]
+      summary: Удалить комнату
+      operationId: deleteRoom
+      description: |
+        Удаляет комнату со всеми участниками, позициями и назначениями. Требует
+        `X-Admin-Token`. Разрешено в любом статусе.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "204":
+          description: Комната удалена
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /rooms/{roomId}/admin-token/rotate:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ rooms ]
+      summary: Перевыпустить админ-токен
+      operationId: rotateAdminToken
+      description: |
+        Генерирует новый админ-токен комнаты и возвращает его. Требует текущий
+        `X-Admin-Token`. Старый токен перестаёт действовать. Разрешено в любом
+        статусе.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "200":
+          description: Комната с новым токеном
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRoomResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /rooms/{roomId}/open:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ rooms ]
+      summary: Открыть выбор позиций
+      operationId: openRoom
+      description: |
+        Переводит комнату из `draft` (или повторно из `claiming`) в статус
+        `claiming`. Требует `X-Admin-Token`. Ошибка `409`, если комната уже
+        `finalized` или в ней нет ни одной позиции.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "200":
+          description: Обновлённая комната (статус `claiming`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Room"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/finalize:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ rooms ]
+      summary: Зафиксировать результат
+      operationId: finalizeRoom
+      description: |
+        Выполняет расчёт и переводит комнату из `claiming` в `finalized`.
+        Требует `X-Admin-Token`. Возвращает полный расчёт. Ошибка `409`, если
+        комната не в `claiming`, не указан плательщик (`payer_participant_id`),
+        есть неназначенные позиции или рассчитанный итог не совпадает с
+        `expected_total` (если тот задан).
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "200":
+          description: Зафиксированный расчёт
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalculateResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/reopen:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ rooms ]
+      summary: Вернуть комнату в claiming
+      operationId: reopenRoom
+      description: |
+        Переводит комнату из `finalized` обратно в `claiming`. Требует
+        `X-Admin-Token`. Ошибка `409`, если комната не `finalized`.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "200":
+          description: Обновлённая комната (статус `claiming`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Room"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/events:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    get:
+      tags: [ rooms ]
+      summary: SSE-поток событий комнаты
+      operationId: roomEvents
+      description: |
+        Открывает Server-Sent Events-поток. Сразу после подключения и затем при
+        каждом изменении комнаты отправляет событие `room.updated` с данными
+        `{"room_id": "<roomId>"}`. Не требует авторизации. Доступен в любом
+        статусе.
+      responses:
+        "200":
+          description: SSE-поток
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: room.updated
+                  data: {"room_id":"abc123"}
+
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /rooms/{roomId}/participants:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ participants ]
+      summary: Добавить участника (организатор)
+      operationId: addParticipant
+      description: |
+        Создаёт участника комнаты. Требует `X-Admin-Token`. Разрешено в статусах
+        `draft` и `claiming`; в `finalized` возвращает `409`.
+      security:
+        - AdminTokenAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParticipantRequest"
+      responses:
+        "201":
+          description: Участник создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Participant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/join:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ participants ]
+      summary: Присоединиться как участник
+      operationId: joinRoom
+      description: |
+        Присоединяет участника по имени и возвращает его токен
+        (`X-Participant-Token`). Не требует авторизации. Ошибка `409`, если
+        комната `finalized` или имя уже занято участником с токеном.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParticipantRequest"
+      responses:
+        "201":
+          description: Участник присоединился
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinRoomResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/participants/{participantId}:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+      - $ref: "#/components/parameters/ParticipantId"
+    patch:
+      tags: [ participants ]
+      summary: Изменить участника
+      operationId: updateParticipant
+      description: |
+        Переименовывает участника. Требует `X-Admin-Token`. Разрешено в статусах
+        `draft` и `claiming`; в `finalized` возвращает `409`.
+      security:
+        - AdminTokenAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParticipantRequest"
+      responses:
+        "200":
+          description: Обновлённый участник
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Participant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [ participants ]
+      summary: Удалить участника
+      operationId: deleteParticipant
+      description: |
+        Удаляет участника и его назначения. Требует `X-Admin-Token`. Разрешено в
+        статусах `draft` и `claiming`; в `finalized` возвращает `409`.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "204":
+          description: Участник удалён
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/items:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ items ]
+      summary: Добавить позицию чека
+      operationId: addItem
+      description: |
+        Добавляет позицию чека. Требует `X-Admin-Token`. Разрешено в статусах
+        `draft` и `claiming`; в `finalized` возвращает `409`. Если `quantity` не
+        указан, он равен `1`. `total` вычисляется как `quantity * unit_price`.
+      security:
+        - AdminTokenAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddItemRequest"
+      responses:
+        "201":
+          description: Позиция создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/items/{itemId}:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+      - $ref: "#/components/parameters/ItemId"
+    patch:
+      tags: [ items ]
+      summary: Изменить позицию
+      operationId: updateItem
+      description: |
+        Обновляет позицию чека. Требует `X-Admin-Token`. Разрешено в статусах
+        `draft` и `claiming`; в `finalized` возвращает `409`. `total`
+        пересчитывается автоматически.
+      security:
+        - AdminTokenAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateItemRequest"
+      responses:
+        "200":
+          description: Обновлённая позиция
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [ items ]
+      summary: Удалить позицию
+      operationId: deleteItem
+      description: |
+        Удаляет позицию и связанные назначения. Требует `X-Admin-Token`.
+        Разрешено в статусах `draft` и `claiming`; в `finalized` возвращает
+        `409`.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "204":
+          description: Позиция удалена
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/assignments:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ assignments ]
+      summary: Назначить позицию участнику
+      operationId: addAssignment
+      description: |
+        Назначает позицию участнику с весом. Требует `X-Admin-Token`. Разрешено
+        в статусах `draft` и `claiming`; в `finalized` возвращает `409`.
+        Повторное назначение той же пары (позиция, участник) обновляет вес.
+      security:
+        - AdminTokenAuth: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignmentRequest"
+      responses:
+        "201":
+          description: Назначение создано
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemAssignment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/assignments/{itemId}/{participantId}:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+      - $ref: "#/components/parameters/ItemId"
+      - $ref: "#/components/parameters/ParticipantId"
+    delete:
+      tags: [ assignments ]
+      summary: Снять назначение
+      operationId: deleteAssignment
+      description: |
+        Снимает назначение позиции участнику. Требует `X-Admin-Token`.
+        Разрешено в статусах `draft` и `claiming`; в `finalized` возвращает
+        `409`.
+      security:
+        - AdminTokenAuth: [ ]
+      responses:
+        "204":
+          description: Назначение снято
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/selections/{itemId}:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+      - $ref: "#/components/parameters/ItemId"
+    put:
+      tags: [ selections ]
+      summary: Выбрать позицию (участник)
+      operationId: selectItem
+      description: |
+        Текущий участник выбирает позицию с указанным весом (по умолчанию `1`).
+        Требует `X-Participant-Token`. Разрешено только в статусе `claiming`;
+        иначе `409`. Повторный выбор той же позиции обновляет вес.
+      security:
+        - ParticipantTokenAuth: [ ]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SelectionRequest"
+      responses:
+        "200":
+          description: Назначение создано/обновлено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemAssignment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [ selections ]
+      summary: Снять выбор (участник)
+      operationId: unselectItem
+      description: |
+        Участник снимает свой выбор позиции. Идемпотентно: всегда возвращает
+        `204`, даже если выбора не было. Требует `X-Participant-Token`.
+        Разрешено только в статусе `claiming`; иначе `409`.
+      security:
+        - ParticipantTokenAuth: [ ]
+      responses:
+        "204":
+          description: Выбор снят
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /rooms/{roomId}/calculate:
+    parameters:
+      - $ref: "#/components/parameters/RoomId"
+    post:
+      tags: [ calculation ]
+      summary: Рассчитать итоги
+      operationId: calculateRoom
+      description: |
+        Выполняет расчёт без изменения статуса комнаты. Не требует авторизации.
+        Возвращает доли участников и список долгов (если задан
+        `payer_participant_id`). Ошибка `400`, если есть неназначенные позиции,
+        нет участников/позиций или скидка превышает итог.
+      responses:
+        "200":
+          description: Результат расчёта
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalculateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    AdminTokenAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: Токен организатора комнаты.
+    ParticipantTokenAuth:
+      type: apiKey
+      in: header
+      name: X-Participant-Token
+      description: Токен участника комнаты.
+  parameters:
+    RoomId:
+      name: roomId
+      in: path
+      required: true
+      description: Идентификатор комнаты.
+      schema:
+        type: string
+    ParticipantId:
+      name: participantId
+      in: path
+      required: true
+      description: Идентификатор участника.
+      schema:
+        type: string
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      description: Идентификатор позиции.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Неверный JSON или не прошла валидация полей.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Неверный или отсутствующий токен авторизации.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Комната, участник или позиция не найдены.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Операция недопустима в текущем статусе комнаты или конфликт данных.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [ error ]
+      properties:
+        error:
+          type: string
+          description: Человекочитаемое сообщение об ошибке.
+    Room:
+      type: object
+      description: |
+        Комната. Поле `admin_token` никогда не возвращается в JSON (оно
+        передаётся только в ответах создания и ротации токена).
+      required:
+        - id
+        - title
+        - currency
+        - service_fee
+        - tip_amount
+        - discount
+        - discount_mode
+        - expected_total
+        - payer_participant_id
+        - status
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        currency:
+          type: string
+          description: Трёхбуквенный код валюты.
+          example: EUR
+        service_fee:
+          type: integer
+          format: int64
+          description: Сервисный сбор в минорных единицах.
+        tip_amount:
+          type: integer
+          format: int64
+          description: Чаевые в минорных единицах.
+        discount:
+          type: integer
+          format: int64
+          description: Скидка в минорных единицах.
+        discount_mode:
+          type: string
+          enum: [ proportional, equal ]
+        expected_total:
+          type: integer
+          format: int64
+          description: Ожидаемый итог в минорных единицах (0 — не задан).
+        payer_participant_id:
+          type: string
+          description: Идентификатор участника-плательщика (пустая строка — не задан).
+        status:
+          type: string
+          enum: [ draft, claiming, finalized ]
+        finalized_at:
+          type: string
+          format: date-time
+          nullable: true
+    Participant:
+      type: object
+      required: [ id, room_id, name, claimed ]
+      properties:
+        id:
+          type: string
+        room_id:
+          type: string
+        name:
+          type: string
+        claimed:
+          type: boolean
+          description: Получил ли участник токен доступа.
+    ReceiptItem:
+      type: object
+      required: [ id, room_id, name, quantity, unit_price, total ]
+      properties:
+        id:
+          type: string
+        room_id:
+          type: string
+        name:
+          type: string
+        quantity:
+          type: integer
+        unit_price:
+          type: integer
+          format: int64
+          description: Цена за единицу в минорных единицах.
+        total:
+          type: integer
+          format: int64
+          description: quantity * unit_price, минорные единицы.
+    ItemAssignment:
+      type: object
+      required: [ item_id, participant_id, weight ]
+      properties:
+        item_id:
+          type: string
+        participant_id:
+          type: string
+        weight:
+          type: integer
+          format: int64
+          description: Вес от 1 до 1000.
+    ParticipantResult:
+      type: object
+      required:
+        - participant_id
+        - name
+        - base_amount
+        - service_share
+        - tip_share
+        - discount_share
+        - total_amount
+      properties:
+        participant_id:
+          type: string
+        name:
+          type: string
+        base_amount:
+          type: integer
+          format: int64
+        service_share:
+          type: integer
+          format: int64
+        tip_share:
+          type: integer
+          format: int64
+        discount_share:
+          type: integer
+          format: int64
+        total_amount:
+          type: integer
+          format: int64
+    Debt:
+      type: object
+      required:
+        - from_participant_id
+        - from_name
+        - to_participant_id
+        - to_name
+        - amount
+      properties:
+        from_participant_id:
+          type: string
+        from_name:
+          type: string
+        to_participant_id:
+          type: string
+        to_name:
+          type: string
+        amount:
+          type: integer
+          format: int64
+          description: Сумма долга в минорных единицах.
+    CreateRoomRequest:
+      type: object
+      required: [ title ]
+      properties:
+        title:
+          type: string
+          maxLength: 120
+        currency:
+          type: string
+          description: Трёхбуквенный код валюты; по умолчанию `EUR`.
+        service_fee:
+          type: integer
+          format: int64
+          minimum: 0
+        tip_amount:
+          type: integer
+          format: int64
+          minimum: 0
+        discount:
+          type: integer
+          format: int64
+          minimum: 0
+        discount_mode:
+          type: string
+          enum: [ proportional, equal ]
+          description: По умолчанию `proportional`.
+        expected_total:
+          type: integer
+          format: int64
+          minimum: 0
+    UpdateRoomRequest:
+      type: object
+      description: Все поля необязательны; передаются только изменяемые.
+      properties:
+        title:
+          type: string
+        currency:
+          type: string
+        service_fee:
+          type: integer
+          format: int64
+          minimum: 0
+        tip_amount:
+          type: integer
+          format: int64
+          minimum: 0
+        discount:
+          type: integer
+          format: int64
+          minimum: 0
+        discount_mode:
+          type: string
+          enum: [ proportional, equal ]
+        expected_total:
+          type: integer
+          format: int64
+          minimum: 0
+        payer_participant_id:
+          type: string
+    ParticipantRequest:
+      type: object
+      required: [ name ]
+      properties:
+        name:
+          type: string
+          maxLength: 80
+    AddItemRequest:
+      type: object
+      required: [ name, unit_price ]
+      properties:
+        name:
+          type: string
+          maxLength: 160
+        quantity:
+          type: integer
+          minimum: 1
+          description: По умолчанию `1`.
+        unit_price:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Цена за единицу в минорных единицах.
+    UpdateItemRequest:
+      type: object
+      description: Все поля необязательны; передаются только изменяемые.
+      properties:
+        name:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          type: integer
+          format: int64
+          minimum: 1
+    AssignmentRequest:
+      type: object
+      required: [ item_id, participant_id, weight ]
+      properties:
+        item_id:
+          type: string
+        participant_id:
+          type: string
+        weight:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000
+    SelectionRequest:
+      type: object
+      description: Тело необязательно; `weight` по умолчанию `1`.
+      properties:
+        weight:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000
+    RoomDetails:
+      type: object
+      required:
+        - room
+        - participants
+        - items
+        - assignments
+        - subtotal
+        - unassigned_item_ids
+      properties:
+        room:
+          $ref: "#/components/schemas/Room"
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Participant"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReceiptItem"
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ItemAssignment"
+        subtotal:
+          type: integer
+          format: int64
+          description: Сумма позиций без сборов, чаевых и скидки.
+        unassigned_item_ids:
+          type: array
+          items:
+            type: string
+          description: Идентификаторы позиций без назначений.
+    CreateRoomResponse:
+      type: object
+      required: [ room, admin_token ]
+      properties:
+        room:
+          $ref: "#/components/schemas/Room"
+        admin_token:
+          type: string
+          description: Токен организатора; передаётся в заголовке `X-Admin-Token`.
+    JoinRoomResponse:
+      type: object
+      required: [ participant, participant_token ]
+      properties:
+        participant:
+          $ref: "#/components/schemas/Participant"
+        participant_token:
+          type: string
+          description: Токен участника; передаётся в заголовке `X-Participant-Token`.
+    CalculateResponse:
+      type: object
+      required:
+        - room
+        - results
+        - debts
+        - subtotal
+        - calculated_total
+        - difference
+        - matches_expected_total
+      properties:
+        room:
+          $ref: "#/components/schemas/Room"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParticipantResult"
+        debts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Debt"
+        subtotal:
+          type: integer
+          format: int64
+        calculated_total:
+          type: integer
+          format: int64
+        difference:
+          type: integer
+          format: int64
+          description: calculated_total - expected_total (0, если expected_total не задан).
+        matches_expected_total:
+          type: boolean

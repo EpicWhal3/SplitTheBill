@@ -13,37 +13,75 @@
 * Режимы организатора (админ-токен) и участника (токен участника).
 * Веса для позиций, которые делятся между несколькими участниками.
 * Итоговый список долгов «кто кому сколько должен».
+* SSE-обновления комнаты с резервным polling на клиенте.
+* Rate limiting, ограничение размера тела запроса и заголовки безопасности.
 
 ## Архитектура
 
-```markdown
+```text
 SplitTheBill/
-├── backend/ # Go API (net/http), PostgreSQL или in-memory хранилище
-│ ├── cmd/api/ # точка входа
-│ ├── internal/ # domain, store, room (HTTP-хендлеры), calculation, migration
-│ └── migrations/ # SQL-миграции (golang-migrate)
-├── web/ # Next.js (App Router) + React + TypeScript
-│ ├── app/ # страницы: лендинг и комната
-│ └── lib/ # API-клиент, расчёты, работа с деньгами и сессией
-└── .github/workflows # CI
-
+├── backend/                 # Go API (net/http), PostgreSQL или in-memory хранилище
+│   ├── cmd/api/             # точка входа и HTTP middleware
+│   ├── internal/            # domain, store, room (HTTP-хендлеры), calculation, migration
+│   └── migrations/          # SQL-миграции (golang-migrate)
+├── web/                     # Next.js (App Router) + React + TypeScript
+│   ├── app/                 # страницы: лендинг и комната
+│   └── lib/                 # API-клиент, расчёты, работа с деньгами и сессией
+├── docs/                    # документация (deployment, API, current-state)
+├── docker-compose.yml       # весь стек: postgres + backend + web
+└── .github/workflows/       # CI
 ```
 
 * **Backend** — Go, стандартная библиотека `net/http`, деньги хранятся как
-  `int64` в минорных единицах (копейках).
+  `int64` в минорных единицах (копейках/центах).
 * **Хранилище** — PostgreSQL в Docker Compose или in-memory (локальная
   разработка без базы данных).
-* **Frontend** — Next.js 16 (App Router), React 19, TypeScript.
+* **Frontend** — Next.js (App Router), React 19, TypeScript.
 
 ## Требования
 
-* Go 1.24+ (см. [`backend/go.mod`](backend/go.mod))
+* Go 1.26+ (см. [`backend/go.mod`](backend/go.mod))
 * Node.js 22+ и npm
-* Docker с Compose
+* Docker с Compose v2
 
-## Быстрый старт
+## Быстрый старт (Docker Compose)
 
-### 1. Backend в in-memory режиме (без базы данных)
+Одна команда поднимает PostgreSQL, backend и web:
+
+```bash
+docker compose up --build -d
+```
+
+После старта:
+
+* веб-интерфейс: <http://localhost:3000>
+* API: <http://localhost:8080>
+* PostgreSQL: `localhost:5432` (база/пользователь/пароль — `splitthebill`)
+
+Проверка живости backend:
+
+```bash
+curl http://localhost:8080/health
+# => ok
+```
+
+Остановка:
+
+```bash
+docker compose down
+```
+
+Удалить также данные PostgreSQL:
+
+```bash
+docker compose down -v
+```
+
+Подробнее о сборке и развёртывании — в [`docs/deployment.md`](docs/deployment.md).
+
+## Локальный запуск без Docker
+
+### Backend в in-memory режиме (без базы данных)
 
 Если переменная `DATABASE_URL` не задана, сервер использует in-memory
 хранилище — данные живут только до перезапуска процесса.
@@ -53,62 +91,18 @@ cd backend
 go run ./cmd/api
 ```
 
-Сервер поднимется на `http://localhost:8080` (или на порту из `PORT` ).
+Сервер поднимется на `http://localhost:8080` (или на порту из `PORT`).
 
-### 2. Все сервисы через Docker Compose
-
-```bash
-docker compose up --build
-```
-
-Команда запускает PostgreSQL, backend и web. Приложение доступно на
-`http://localhost:3000`, API — на `http://localhost:8080`.
-
-Для остановки сервисов:
-
-```bash
-docker compose down
-```
-
-Чтобы удалить также данные PostgreSQL:
-
-```bash
-docker compose down -v
-```
-
-### 3. Переменные окружения backend
-
-При ручном запуске backend скопируйте пример и при необходимости отредактируйте:
-
-```bash
-cd backend
-cp .env.example .env
-```
-
-| Переменная        | Назначение                                                                  | По умолчанию                                                           |
-|-------------------|-----------------------------------------------------------------------------|------------------------------------------------------------------------|
-| `DATABASE_URL`    | Строка подключения к PostgreSQL. Если пусто — используется in-memory режим. | пусто                                                                  |
-| `PORT`            | Порт HTTP-сервера.                                                          | `8080`                                                                 |
-| `ALLOWED_ORIGINS` | Список разрешённых CORS-origin через запятую. `*` не поддерживается.        | `http://localhost:3000,http://127.0.0.1:3000,http://192.168.56.1:3000` |
-
-Пример `DATABASE_URL` :
-
-```cmd
-postgres://splitthebill:splitthebill@localhost:5432/splitthebill?sslmode=disable
-```
-
-### 4. Миграции
-
-Миграции применяются автоматически при старте backend, если задан
-`DATABASE_URL` (см. [ `backend/internal/migration/migration.go` ](backend/internal/migration/migration.go)).
-Отдельная команда не требуется — достаточно запустить сервер:
+### Backend с PostgreSQL
 
 ```bash
 cd backend
 DATABASE_URL="postgres://splitthebill:splitthebill@localhost:5432/splitthebill?sslmode=disable" go run ./cmd/api
 ```
 
-### 5. Frontend отдельно (режим разработки)
+Миграции применяются автоматически при старте.
+
+### Frontend в режиме разработки
 
 ```bash
 cd web
@@ -117,41 +111,65 @@ npm install
 npm run dev
 ```
 
-Приложение откроется на `http://localhost:3000` .
+Приложение откроется на `http://localhost:3000`.
 
-| Переменная            | Назначение               | По умолчанию            |
-|-----------------------|--------------------------|-------------------------|
-| `NEXT_PUBLIC_API_URL` | Базовый URL backend API. | `http://localhost:8080` |
+## Переменные окружения
 
-## Миграции и существующие базы
+### Backend
 
-Схема развивалась вместе с приложением, поэтому база, созданная старой версией
-миграции `000001` , может не содержать колонок `discount_mode` , `status` и
-`finalized_at` в таблице `rooms` .
+| Переменная                       | Назначение                                                                  | По умолчанию                                                           |
+|----------------------------------|-----------------------------------------------------------------------------|------------------------------------------------------------------------|
+| `DATABASE_URL`                   | Строка подключения к PostgreSQL. Если пусто — используется in-memory режим. | пусто                                                                  |
+| `PORT`                           | Порт HTTP-сервера.                                                          | `8080`                                                                 |
+| `ALLOWED_ORIGINS`                | Список разрешённых CORS-origin через запятую. `*` не поддерживается.        | `http://localhost:3000,http://127.0.0.1:3000,http://192.168.56.1:3000` |
+| `MAX_REQUEST_BODY_BYTES`         | Максимальный размер тела запроса в байтах (превышение — `413`).             | `1048576`                                                              |
+| `RATE_LIMIT_REQUESTS_PER_SECOND` | Скорость пополнения токенов rate limiter (запросов в секунду на IP).        | `10`                                                                   |
+| `RATE_LIMIT_BURST`               | Размер «ведра» токенов rate limiter (пиковая ёмкость на IP).                | `20`                                                                   |
 
-* **Для локальной разработки без важных данных** — проще пересоздать базу:
+Пример `DATABASE_URL`:
 
-```bash
-  cd backend
-  docker compose down -v
-  docker compose up -d
-  ```
+```text
+postgres://splitthebill:splitthebill@localhost:5432/splitthebill?sslmode=disable
+```
 
-Флаг `-v` удаляет том с данными PostgreSQL.
+### Web
+
+| Переменная            | Назначение                                                                | По умолчанию            |
+|-----------------------|---------------------------------------------------------------------------|-------------------------|
+| `NEXT_PUBLIC_API_URL` | Базовый URL backend API. Встраивается в клиентский бандл на этапе сборки. | `http://localhost:8080` |
+
+## Миграции
+
+Миграции применяются автоматически при старте backend, если задан
+`DATABASE_URL` (см. [`backend/internal/migration/migration.go`](backend/internal/migration/migration.go)).
+Вся схема данных описана в единственном файле
+[`backend/migrations/000001_init.up.sql`](backend/migrations/000001_init.up.sql),
+который создаёт таблицы `rooms`, `participants`, `receipt_items`,
+`item_assignments` и необходимые индексы. Отдельная команда не требуется —
+достаточно запустить сервер.
 
 ## Тесты и проверки
 
 ```bash
-# Backend: тесты
-cd backend && go test ./...
+# Backend: формат, статический анализ и тесты
+cd backend
+test -z "$(gofmt -l .)"
+go vet ./...
+go test -race -coverprofile=coverage.out ./...
 
-# Frontend: тесты, линтер и production-сборка
-cd web && npm run test && npm run lint && npm run build
+# Frontend: установка зависимостей, линтер, тесты и production-сборка
+cd web
+npm ci
+npm run lint
+npm run test
+npm run build
 ```
 
-Те же проверки выполняются в CI ([ `.github/workflows/ci.yml` ](.github/workflows/ci.yml)).
 Для `npm ci` в репозитории должен присутствовать
-[ `web/package-lock.json` ](web/package-lock.json) — он закоммичен.
+[`web/package-lock.json`](web/package-lock.json) — он закоммичен.
+
+Те же проверки выполняются в CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)),
+включая валидацию `docker compose config` и сборку образов `docker compose build`.
 
 ## Жизненный цикл комнаты
 
@@ -161,33 +179,55 @@ cd web && npm run test && npm run lint && npm run build
 | `claiming`  | Участники выбирают свои блюда и указывают веса.                   |
 | `finalized` | Распределение завершено, суммы и долги зафиксированы.             |
 
-Переходы: `draft` → `claiming` ( `POST /rooms/{roomId}/open` ),
-`claiming` → `finalized` ( `POST /rooms/{roomId}/finalize` ),
-возврат в `claiming` ( `POST /rooms/{roomId}/reopen` ).
+Переходы:
+
+* `draft` → `claiming`: `POST /rooms/{roomId}/open`
+* `claiming` → `finalized`: `POST /rooms/{roomId}/finalize`
+* `finalized` → `claiming`: `POST /rooms/{roomId}/reopen`
+
+В `draft` и `claiming` разрешено изменение данных комнаты; в `finalized`
+комната доступна только для чтения (кроме удаления и ротации токена).
 
 ## API
 
-| Метод и путь                                                  | Назначение                                           |
-|---------------------------------------------------------------|------------------------------------------------------|
-| `POST /rooms`                                                 | Создать комнату                                      |
-| `GET /rooms/{roomId}`                                         | Получить состояние комнаты                           |
-| `PATCH /rooms/{roomId}`                                       | Обновить параметры комнаты                           |
-| `POST /rooms/{roomId}/join`                                   | Присоединиться как участник                          |
-| `POST /rooms/{roomId}/participants`                           | Добавить участника (организатор)                     |
-| `PATCH /rooms/{roomId}/participants/{participantId}`          | Изменить участника                                   |
-| `DELETE /rooms/{roomId}/participants/{participantId}`         | Удалить участника                                    |
-| `POST /rooms/{roomId}/items`                                  | Добавить позицию чека                                |
-| `PATCH /rooms/{roomId}/items/{itemId}`                        | Изменить позицию                                     |
-| `DELETE /rooms/{roomId}/items/{itemId}`                       | Удалить позицию                                      |
-| `POST /rooms/{roomId}/assignments`                            | Назначить позицию участнику                          |
-| `DELETE /rooms/{roomId}/assignments/{itemId}/{participantId}` | Снять назначение                                     |
-| `PUT /rooms/{roomId}/selections/{itemId}`                     | Участник выбирает позицию                            |
-| `DELETE /rooms/{roomId}/selections/{itemId}`                  | Участник снимает выбор (идемпотентно, всегда `204` ) |
-| `POST /rooms/{roomId}/calculate`                              | Рассчитать итоги                                     |
-| `POST /rooms/{roomId}/open`                                   | Перевести в `claiming`                               |
-| `POST /rooms/{roomId}/finalize`                               | Зафиксировать результат                              |
-| `POST /rooms/{roomId}/reopen`                                 | Вернуть в `claiming`                                 |
-| `GET /health`                                                 | Проверка живости сервиса                             |
-
 Авторизация передаётся заголовками `X-Admin-Token` (организатор) и
-`X-Participant-Token` (участник).
+`X-Participant-Token` (участник). Денежные суммы передаются в минорных
+единицах `int64` (копейки/центы).
+
+Обзор всех эндпоинтов:
+
+| Метод и путь                                                  | Назначение                                          |
+|---------------------------------------------------------------|-----------------------------------------------------|
+| `GET /health`                                                 | Проверка живости сервиса                            |
+| `POST /rooms`                                                 | Создать комнату                                     |
+| `GET /rooms/{roomId}`                                         | Получить состояние комнаты                          |
+| `PATCH /rooms/{roomId}`                                       | Обновить параметры комнаты                          |
+| `DELETE /rooms/{roomId}`                                      | Удалить комнату                                     |
+| `POST /rooms/{roomId}/admin-token/rotate`                     | Перевыпустить админ-токен                           |
+| `POST /rooms/{roomId}/open`                                   | Перевести комнату в `claiming`                      |
+| `POST /rooms/{roomId}/finalize`                               | Зафиксировать результат                             |
+| `POST /rooms/{roomId}/reopen`                                 | Вернуть комнату в `claiming`                        |
+| `GET /rooms/{roomId}/events`                                  | SSE-поток событий `room.updated`                    |
+| `POST /rooms/{roomId}/participants`                           | Добавить участника (организатор)                    |
+| `POST /rooms/{roomId}/join`                                   | Присоединиться как участник                         |
+| `PATCH /rooms/{roomId}/participants/{participantId}`          | Изменить участника                                  |
+| `DELETE /rooms/{roomId}/participants/{participantId}`         | Удалить участника                                   |
+| `POST /rooms/{roomId}/items`                                  | Добавить позицию чека                               |
+| `PATCH /rooms/{roomId}/items/{itemId}`                        | Изменить позицию                                    |
+| `DELETE /rooms/{roomId}/items/{itemId}`                       | Удалить позицию                                     |
+| `POST /rooms/{roomId}/assignments`                            | Назначить позицию участнику                         |
+| `DELETE /rooms/{roomId}/assignments/{itemId}/{participantId}` | Снять назначение                                    |
+| `PUT /rooms/{roomId}/selections/{itemId}`                     | Участник выбирает позицию                           |
+| `DELETE /rooms/{roomId}/selections/{itemId}`                  | Участник снимает выбор (идемпотентно, всегда `204`) |
+| `POST /rooms/{roomId}/calculate`                              | Рассчитать итоги                                    |
+
+Подробное описание схем запросов/ответов и кодов ошибок:
+
+* [`docs/openapi.yaml`](docs/openapi.yaml) — машиночитаемая OpenAPI-спецификация;
+* [`docs/api.md`](docs/api.md) — краткий справочник по эндпоинтам.
+
+## Документация
+
+* [`docs/deployment.md`](docs/deployment.md) — развёртывание и сборка Docker-образов;
+* [`docs/api.md`](docs/api.md) и [`docs/openapi.yaml`](docs/openapi.yaml) — документация API;
+* [`docs/current-state.md`](docs/current-state.md) — текущее состояние проекта.
