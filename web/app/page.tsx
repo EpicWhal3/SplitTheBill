@@ -182,10 +182,6 @@ export default function HomePage() {
               maxLength={64}
               autoComplete="new-password"
             />
-            <small>
-              Нужен, чтобы вернуть доступ к комнате, если вы закроете браузер
-              или очистите кэш.
-            </small>
           </label>
 
           {error && <p className="error">{error}</p>}
