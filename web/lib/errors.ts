@@ -71,6 +71,17 @@ const translations: Record<string, string> = {
   "failed to create room": "Не удалось создать комнату. Попробуйте ещё раз.",
   "failed to save assignment":
     "Не удалось сохранить назначение. Попробуйте ещё раз.",
+  "failed to restore rooms":
+    "Не удалось восстановить комнаты. Попробуйте ещё раз.",
+  "invalid organizer credentials":
+    "Неверное имя или пароль организатора.",
+  "organizer name and pin are required":
+    "Введите имя и пароль организатора.",
+  "organizer pin requires organizer name":
+    "Укажите имя организатора вместе с паролем.",
+  "organizer name is too long": "Имя организатора слишком длинное.",
+  "organizer pin must be between 4 and 64 characters":
+    "Пароль организатора должен быть от 4 до 64 символов.",
 };
 
 export function translateError(message: string): string {

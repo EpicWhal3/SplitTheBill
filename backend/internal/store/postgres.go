@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"splitthebill/backend/internal/domain"
 
@@ -36,6 +37,119 @@ func (s *PostgresStore) Close() {
 	s.db.Close()
 }
 
+const roomSelectQuery = `
+	SELECT
+		id,
+		title,
+		currency,
+		service_fee,
+		tip_amount,
+		discount,
+		discount_mode,
+		expected_total,
+		COALESCE(payer_participant_id, ''),
+		status,
+		finalized_at,
+		admin_token,
+		COALESCE(organizer_name, ''),
+		COALESCE(organizer_pin_hash, ''),
+		created_at,
+		updated_at
+	FROM rooms
+`
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRoom(row scanner) (domain.Room, error) {
+	var room domain.Room
+	var finalizedAt sql.NullTime
+
+	err := row.Scan(
+		&room.ID,
+		&room.Title,
+		&room.Currency,
+		&room.ServiceFee,
+		&room.TipAmount,
+		&room.Discount,
+		&room.DiscountMode,
+		&room.ExpectedTotal,
+		&room.PayerParticipantID,
+		&room.Status,
+		&finalizedAt,
+		&room.AdminToken,
+		&room.OrganizerName,
+		&room.OrganizerPinHash,
+		&room.CreatedAt,
+		&room.UpdatedAt,
+	)
+	if err != nil {
+		return domain.Room{}, err
+	}
+	if finalizedAt.Valid {
+		room.FinalizedAt = &finalizedAt.Time
+	}
+
+	return room, nil
+}
+
+func (s *PostgresStore) ListRoomsByOrganizer(
+	organizerName string,
+	organizerPinHash string,
+) ([]domain.Room, error) {
+	ctx := context.Background()
+
+	rows, err := s.db.Query(
+		ctx,
+		roomSelectQuery+`
+			WHERE lower(organizer_name) = lower($1)
+				AND organizer_pin_hash = $2
+			ORDER BY updated_at DESC
+		`,
+		organizerName,
+		organizerPinHash,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	rooms := make([]domain.Room, 0)
+
+	for rows.Next() {
+		room, err := scanRoom(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		rooms = append(rooms, room)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return rooms, nil
+}
+
+func (s *PostgresStore) DeleteExpiredRooms(
+	olderThan time.Time,
+) (int64, error) {
+	ctx := context.Background()
+
+	commandTag, err := s.db.Exec(
+		ctx,
+		`DELETE FROM rooms WHERE updated_at < $1`,
+		olderThan,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return commandTag.RowsAffected(), nil
+}
+
 func (s *PostgresStore) CreateRoom(
 	room domain.Room,
 ) (domain.Room, error) {
@@ -65,12 +179,15 @@ func (s *PostgresStore) CreateRoom(
 			payer_participant_id,
 			status,
 			finalized_at,
-			admin_token
+			admin_token,
+			organizer_name,
+			organizer_pin_hash
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11, $12, $13, $14)
+		RETURNING created_at, updated_at
 	`
 
-	_, err := s.db.Exec(
+	err := s.db.QueryRow(
 		ctx,
 		query,
 		room.ID,
@@ -85,6 +202,11 @@ func (s *PostgresStore) CreateRoom(
 		room.Status,
 		room.FinalizedAt,
 		room.AdminToken,
+		room.OrganizerName,
+		room.OrganizerPinHash,
+	).Scan(
+		&room.CreatedAt,
+		&room.UpdatedAt,
 	)
 	if err != nil {
 		return domain.Room{}, err
@@ -98,44 +220,14 @@ func (s *PostgresStore) GetRoom(
 ) (domain.Room, error) {
 	ctx := context.Background()
 
-	query := `
-		SELECT
-			id,
-			title,
-			currency,
-			service_fee,
-			tip_amount,
-			discount,
-			discount_mode,
-			expected_total,
-			COALESCE(payer_participant_id, ''),
-			status,
-			finalized_at,
-			admin_token
-		FROM rooms
-		WHERE id = $1
-	`
-
-	var room domain.Room
-	var finalizedAt sql.NullTime
-
-	err := s.db.QueryRow(
-		ctx,
-		query,
-		roomID,
-	).Scan(
-		&room.ID,
-		&room.Title,
-		&room.Currency,
-		&room.ServiceFee,
-		&room.TipAmount,
-		&room.Discount,
-		&room.DiscountMode,
-		&room.ExpectedTotal,
-		&room.PayerParticipantID,
-		&room.Status,
-		&finalizedAt,
-		&room.AdminToken,
+	room, err := scanRoom(
+		s.db.QueryRow(
+			ctx,
+			roomSelectQuery+`
+			WHERE id = $1
+		`,
+			roomID,
+		),
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -143,9 +235,6 @@ func (s *PostgresStore) GetRoom(
 	}
 	if err != nil {
 		return domain.Room{}, err
-	}
-	if finalizedAt.Valid {
-		room.FinalizedAt = &finalizedAt.Time
 	}
 
 	return room, nil

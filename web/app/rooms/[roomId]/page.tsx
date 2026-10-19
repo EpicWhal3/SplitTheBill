@@ -1,6 +1,7 @@
 "use client";
 
 import * as QRCode from "qrcode";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   type SubmitEvent,
@@ -17,6 +18,7 @@ import {
   API_URL,
   type CalculateResponse,
   calculateRoom,
+  claimRoomAdmin,
   deleteAssignment,
   deleteItem,
   deleteParticipant,
@@ -50,6 +52,7 @@ import {
   loadParticipantSession,
   type ParticipantSession,
   saveAdminToken,
+  saveOrganizerName,
   saveParticipantPins,
   saveParticipantSession,
 } from "@/lib/session";
@@ -111,6 +114,11 @@ export default function RoomPage({ params }: Props) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [selectionLoadingId, setSelectionLoadingId] = useState("");
+  const [claimName, setClaimName] = useState("");
+  const [claimPin, setClaimPin] = useState("");
+  const [claimKey, setClaimKey] = useState("");
+  const [claimError, setClaimError] = useState("");
+  const [claimLoading, setClaimLoading] = useState(false);
 
   const loadRoomData = useCallback(
     async (id: string, syncForm: boolean, silent = false) => {
@@ -403,6 +411,47 @@ export default function RoomPage({ params }: Props) {
     const ok = await joinWithInviteToken(roomId, pin);
     if (ok) {
       setJoinPin("");
+    }
+  }
+
+  async function handleClaimAdmin(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!roomId) {
+      return;
+    }
+
+    setClaimError("");
+    setClaimLoading(true);
+
+    try {
+      const name = claimName.trim();
+      const key = claimKey.trim();
+
+      const result = await claimRoomAdmin(
+        roomId,
+        key
+          ? { admin_token: key }
+          : { organizer_name: name, organizer_pin: claimPin },
+      );
+
+      saveAdminToken(roomId, result.admin_token);
+      saveOrganizerName(name);
+      setAdminToken(result.admin_token);
+      setClaimName("");
+      setClaimPin("");
+      setClaimKey("");
+      await loadRoomData(roomId, false);
+    } catch (err) {
+      setClaimError(
+        translateError(
+          err instanceof Error
+            ? err.message
+            : "Не удалось войти как организатор",
+        ),
+      );
+    } finally {
+      setClaimLoading(false);
     }
   }
 
@@ -1154,8 +1203,20 @@ export default function RoomPage({ params }: Props) {
           onDeleteRoom={() => void handleDeleteRoom()}
         />
       ) : (
-        <ParticipantView
-          room={room}
+        <>
+          <OrganizerClaimBlock
+            claimName={claimName}
+            claimPin={claimPin}
+            claimKey={claimKey}
+            claimError={claimError}
+            claimLoading={claimLoading}
+            onSetClaimName={setClaimName}
+            onSetClaimPin={setClaimPin}
+            onSetClaimKey={setClaimKey}
+            onClaimAdmin={handleClaimAdmin}
+          />
+          <ParticipantView
+            room={room}
           participants={participants}
           items={items}
           assignments={assignments}
@@ -1180,8 +1241,9 @@ export default function RoomPage({ params }: Props) {
           onSaveWeight={(item, value) =>
             void saveParticipantWeight(item, value)
           }
-          onRefresh={() => void loadRoomData(roomId, false)}
-        />
+            onRefresh={() => void loadRoomData(roomId, false)}
+          />
+        </>
       )}
     </main>
   );
@@ -1976,6 +2038,68 @@ function ParticipantView(props: ParticipantViewProps) {
   );
 }
 
+function OrganizerClaimBlock(props: {
+  claimName: string;
+  claimPin: string;
+  claimKey: string;
+  claimError: string;
+  claimLoading: boolean;
+  onSetClaimName: (value: string) => void;
+  onSetClaimPin: (value: string) => void;
+  onSetClaimKey: (value: string) => void;
+  onClaimAdmin: (event: SubmitEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <details className="details-block organizer-claim">
+      <summary>Я организатор этой комнаты</summary>
+      <p className="muted">
+        Введите имя и пароль организатора, чтобы вернуть панель управления
+        чеком.
+      </p>
+      {props.claimError && <p className="error">{props.claimError}</p>}
+      <form onSubmit={props.onClaimAdmin} className="grid">
+        <label>
+          Имя организатора
+          <input
+            value={props.claimName}
+            onChange={(event) => props.onSetClaimName(event.target.value)}
+            placeholder="Например: Аня"
+            maxLength={80}
+          />
+        </label>
+        <label>
+          Пароль / PIN организатора
+          <input
+            type="password"
+            value={props.claimPin}
+            onChange={(event) => props.onSetClaimPin(event.target.value)}
+            placeholder="Минимум 4 символа"
+            maxLength={64}
+          />
+        </label>
+        <label>
+          Или резервный ключ организатора
+          <input
+            value={props.claimKey}
+            onChange={(event) => props.onSetClaimKey(event.target.value)}
+            placeholder="Вставьте сохранённый ключ"
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={
+            props.claimLoading ||
+            (!props.claimKey.trim() &&
+              (!props.claimName.trim() || props.claimPin.length < 4))
+          }
+        >
+          {props.claimLoading ? "Входим..." : "Войти как организатор"}
+        </button>
+      </form>
+    </details>
+  );
+}
+
 function StatusPanel({
   room,
   isAdmin,
@@ -2236,6 +2360,9 @@ function RoomHeader({
   return (
     <header className="room-header">
       <div>
+        <Link href="/" className="back-link">
+          ← На главную (Мои комнаты)
+        </Link>
         <p className="eyebrow">{role}</p>
         <h1>{room.title}</h1>
         <p className="muted">

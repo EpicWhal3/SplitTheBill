@@ -1,8 +1,11 @@
 package store
 
 import (
+	"crypto/subtle"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"splitthebill/backend/internal/domain"
 )
@@ -29,6 +32,8 @@ func (s *MemoryStore) CreateRoom(room domain.Room) (domain.Room, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now().UTC()
+
 	room.ID = newID()
 	if room.AdminToken == "" {
 		room.AdminToken = newToken()
@@ -38,6 +43,12 @@ func (s *MemoryStore) CreateRoom(room domain.Room) (domain.Room, error) {
 	}
 	if room.Status == "" {
 		room.Status = domain.RoomStatusDraft
+	}
+	if room.CreatedAt.IsZero() {
+		room.CreatedAt = now
+	}
+	if room.UpdatedAt.IsZero() {
+		room.UpdatedAt = now
 	}
 
 	s.rooms[room.ID] = room
@@ -72,6 +83,10 @@ func (s *MemoryStore) UpdateRoom(room domain.Room) (domain.Room, error) {
 	if room.AdminToken == "" {
 		room.AdminToken = existing.AdminToken
 	}
+	if room.CreatedAt.IsZero() {
+		room.CreatedAt = existing.CreatedAt
+	}
+	room.UpdatedAt = time.Now().UTC()
 
 	s.rooms[room.ID] = room
 	return room, nil
@@ -541,9 +556,74 @@ func (s *MemoryStore) RotateAdminToken(
 	}
 
 	room.AdminToken = newToken()
+	room.UpdatedAt = time.Now().UTC()
 	s.rooms[roomID] = room
 
 	return room, nil
+}
+
+func (s *MemoryStore) ListRoomsByOrganizer(
+	organizerName string,
+	organizerPinHash string,
+) ([]domain.Room, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]domain.Room, 0)
+
+	for _, room := range s.rooms {
+		if !strings.EqualFold(
+			strings.TrimSpace(room.OrganizerName),
+			strings.TrimSpace(organizerName),
+		) {
+			continue
+		}
+		if !pinHashesEqual(room.OrganizerPinHash, organizerPinHash) {
+			continue
+		}
+
+		result = append(result, room)
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+
+	return result, nil
+}
+
+func (s *MemoryStore) DeleteExpiredRooms(
+	olderThan time.Time,
+) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var removed int64
+
+	for roomID, room := range s.rooms {
+		if !room.UpdatedAt.Before(olderThan) {
+			continue
+		}
+
+		delete(s.rooms, roomID)
+		delete(s.participants, roomID)
+		delete(s.items, roomID)
+		delete(s.assignments, roomID)
+		removed++
+	}
+
+	return removed, nil
+}
+
+func pinHashesEqual(left, right string) bool {
+	if left == "" || right == "" || len(left) != len(right) {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare(
+		[]byte(left),
+		[]byte(right),
+	) == 1
 }
 
 func (s *MemoryStore) participantNameExists(

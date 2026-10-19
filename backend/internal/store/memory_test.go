@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"splitthebill/backend/internal/domain"
 )
@@ -577,5 +578,104 @@ func TestMemoryStoreRotateAdminTokenNotFound(t *testing.T) {
 
 	if _, err := appStore.RotateAdminToken("missing"); !errors.Is(err, ErrorNotFound) {
 		t.Fatalf("expected ErrorNotFound, got %v", err)
+	}
+}
+
+func TestMemoryStoreListRoomsByOrganizer(t *testing.T) {
+	appStore := NewMemoryStore()
+
+	now := time.Now().UTC()
+
+	first, err := appStore.CreateRoom(domain.Room{
+		Title:            "First",
+		Currency:         "EUR",
+		OrganizerName:    "Anna",
+		OrganizerPinHash: "hash-a",
+		CreatedAt:        now.Add(-2 * time.Hour),
+		UpdatedAt:        now.Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := appStore.CreateRoom(domain.Room{
+		Title:            "Second",
+		Currency:         "EUR",
+		OrganizerName:    "ANNA",
+		OrganizerPinHash: "hash-a",
+		CreatedAt:        now.Add(-1 * time.Hour),
+		UpdatedAt:        now.Add(-1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := appStore.CreateRoom(domain.Room{
+		Title:            "Other",
+		Currency:         "EUR",
+		OrganizerName:    "Bob",
+		OrganizerPinHash: "hash-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rooms, err := appStore.ListRoomsByOrganizer("anna", "hash-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms) != 2 {
+		t.Fatalf("expected 2 rooms, got %d", len(rooms))
+	}
+	if rooms[0].ID != second.ID || rooms[1].ID != first.ID {
+		t.Fatalf("expected rooms sorted by updated_at desc, got %s then %s", rooms[0].ID, rooms[1].ID)
+	}
+
+	wrongHash, err := appStore.ListRoomsByOrganizer("anna", "wrong-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wrongHash) != 0 {
+		t.Fatalf("expected 0 rooms for wrong hash, got %d", len(wrongHash))
+	}
+}
+
+func TestMemoryStoreDeleteExpiredRooms(t *testing.T) {
+	appStore := NewMemoryStore()
+
+	now := time.Now().UTC()
+
+	oldRoom, err := appStore.CreateRoom(domain.Room{
+		Title:     "Old",
+		Currency:  "EUR",
+		CreatedAt: now.Add(-10 * time.Hour),
+		UpdatedAt: now.Add(-10 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	freshRoom, err := appStore.CreateRoom(domain.Room{
+		Title:     "Fresh",
+		Currency:  "EUR",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := appStore.DeleteExpiredRooms(now.Add(-1 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("expected 1 removed room, got %d", removed)
+	}
+
+	if _, err := appStore.GetRoom(oldRoom.ID); !errors.Is(err, ErrorNotFound) {
+		t.Fatalf("expected old room to be deleted, got %v", err)
+	}
+	if _, err := appStore.GetRoom(freshRoom.ID); err != nil {
+		t.Fatalf("expected fresh room to remain, got %v", err)
 	}
 }

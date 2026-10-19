@@ -25,6 +25,7 @@ services:
       MAX_REQUEST_BODY_BYTES: 1048576
       RATE_LIMIT_REQUESTS_PER_SECOND: 10
       RATE_LIMIT_BURST: 20
+      ROOM_TTL_HOURS: 168
     ports:
       - "8080:8080"
     depends_on:

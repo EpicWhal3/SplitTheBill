@@ -24,8 +24,8 @@ describe("translateError", () => {
       ["weight must be between 1 and 1000", "от 1 до 1000"],
       ["organizer access required", "права организатора"],
       ["participant session is invalid", "Сессия участника недействительна"],
-      ["invite token is required", "персональной ссылки"],
-      ["invalid participant invite token", "Персональная ссылка недействительна"],
+      ["invite token is required", "PIN-код"],
+      ["invalid participant invite token", "PIN-код"],
       ["request body too large", "Запрос слишком большой"],
       ["rate limit exceeded", "Слишком много запросов"],
     ];

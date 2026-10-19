@@ -4,9 +4,10 @@ import (
 	"context"
 	"log"
 	"net/http"
-
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"splitthebill/backend/internal/migration"
 	"splitthebill/backend/internal/room"
@@ -18,6 +19,7 @@ func main() {
 
 	appStore := createStore(ctx)
 	roomHandler := room.NewHandler(appStore)
+	startCleanupLoop(ctx, appStore)
 
 	mux := http.NewServeMux()
 
@@ -157,4 +159,53 @@ func resolveAllowedOrigins() map[string]bool {
 	}
 
 	return allowedOrigins
+}
+
+func startCleanupLoop(ctx context.Context, appStore store.Store) {
+	ttlHours := resolvePositiveInt("ROOM_TTL_HOURS", 168)
+	intervalMinutes := resolvePositiveInt("ROOM_CLEANUP_INTERVAL_MINUTES", 60)
+
+	ttl := time.Duration(ttlHours) * time.Hour
+	interval := time.Duration(intervalMinutes) * time.Minute
+
+	go func() {
+		runCleanup := func() {
+			olderThan := time.Now().UTC().Add(-ttl)
+			removed, err := appStore.DeleteExpiredRooms(olderThan)
+			if err != nil {
+				log.Println("room cleanup failed:", err)
+				return
+			}
+			if removed > 0 {
+				log.Printf("removed %d expired rooms (TTL %s)", removed, ttl)
+			}
+		}
+
+		runCleanup()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runCleanup()
+			}
+		}
+	}()
+}
+
+func resolvePositiveInt(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+
+	return value
 }

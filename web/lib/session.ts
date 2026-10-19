@@ -104,3 +104,79 @@ export function loadParticipantSession(
 export function clearParticipantSession(roomId: string): void {
   window.localStorage.removeItem(participantKey(roomId));
 }
+
+export type RecentRoom = {
+  roomId: string;
+  title: string;
+};
+
+const recentRoomsKey = "split-recent-rooms";
+const organizerNameKey = "split-organizer-name";
+
+export function loadRecentRooms(): RecentRoom[] {
+  const raw = window.localStorage.getItem(recentRoomsKey);
+
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const result: RecentRoom[] = [];
+
+    for (const item of parsed) {
+      if (
+        typeof item === "object" &&
+        item !== null &&
+        typeof (item as RecentRoom).roomId === "string" &&
+        typeof (item as RecentRoom).title === "string"
+      ) {
+        result.push({
+          roomId: (item as RecentRoom).roomId,
+          title: (item as RecentRoom).title,
+        });
+      }
+    }
+
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+export function saveRecentRoom(room: RecentRoom): void {
+  const rooms = loadRecentRooms().filter(
+    (recent) => recent.roomId !== room.roomId,
+  );
+
+  rooms.unshift(room);
+  window.localStorage.setItem(
+    recentRoomsKey,
+    JSON.stringify(rooms.slice(0, 50)),
+  );
+}
+
+export function removeRecentRoom(roomId: string): void {
+  const rooms = loadRecentRooms().filter(
+    (recent) => recent.roomId !== roomId,
+  );
+
+  window.localStorage.setItem(recentRoomsKey, JSON.stringify(rooms));
+}
+
+export function loadOrganizerName(): string {
+  return window.localStorage.getItem(organizerNameKey) ?? "";
+}
+
+export function saveOrganizerName(name: string): void {
+  const trimmed = name.trim();
+
+  if (trimmed) {
+    window.localStorage.setItem(organizerNameKey, trimmed);
+  }
+}

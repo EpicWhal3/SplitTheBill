@@ -591,7 +591,6 @@ th {
     }
 }
 
-/* Stage 3: room lifecycle, participant weights and final debts */
 .status-panel,
 .section-title-row,
 .participant-intro {
@@ -641,7 +640,6 @@ th {
     padding-block: 42px;
 }
 
-/* Stage 2: unassigned items, confirmations and participant final screen */
 .unassigned-list {
     margin: 10px 0 0;
     padding-left: 20px;
@@ -699,7 +697,6 @@ th {
     margin-bottom: 12px;
 }
 
-/* Long item and participant names must wrap instead of overflowing. */
 .item-card h3,
 .item-card-top > strong,
 .selected-by p,
@@ -728,4 +725,73 @@ th {
     .participant-final-debt {
         padding: 16px;
     }
+}
+
+.back-link {
+    display: inline-block;
+    margin-bottom: 8px;
+    color: var(--accent);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.back-link:hover {
+    color: var(--accent-dark);
+    text-decoration: underline;
+}
+
+.recent-rooms {
+    list-style: none;
+    margin: 12px 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+}
+
+.recent-rooms li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-soft);
+}
+
+.recent-rooms a {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    color: var(--text);
+    text-decoration: none;
+}
+
+.recent-rooms a:hover .recent-room-title {
+    color: var(--accent);
+}
+
+.recent-room-title {
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+.recent-room-id {
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+.organizer-claim {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-soft);
+    margin-bottom: 16px;
+}
+
+label small {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
 }

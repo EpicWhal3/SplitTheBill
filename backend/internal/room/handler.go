@@ -50,6 +50,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if path == "rooms/restore" {
+		if r.Method == http.MethodPost {
+			h.restoreOrganizerRooms(w, r)
+			return
+		}
+
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
 	if len(parts) < 2 || parts[0] != "rooms" || parts[1] == "" {
 		writeError(w, http.StatusNotFound, "route not found")
 		return
@@ -213,6 +223,8 @@ type createRoomRequest struct {
 	Discount      int64  `json:"discount"`
 	DiscountMode  string `json:"discount_mode"`
 	ExpectedTotal int64  `json:"expected_total"`
+	OrganizerName string `json:"organizer_name"`
+	OrganizerPin  string `json:"organizer_pin"`
 }
 
 func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"time"
 
 	"splitthebill/backend/internal/domain"
 )
@@ -19,6 +20,8 @@ type Store interface {
 	UpdateRoom(room domain.Room) (domain.Room, error)
 	DeleteRoom(roomID string) error
 	RotateAdminToken(roomID string) (domain.Room, error)
+	ListRoomsByOrganizer(organizerName string, organizerPinHash string) ([]domain.Room, error)
+	DeleteExpiredRooms(olderThan time.Time) (int64, error)
 
 	AddParticipant(roomID string, participant domain.Participant) (domain.Participant, error)
 	JoinParticipantByToken(roomID string, token string) (domain.Participant, error)

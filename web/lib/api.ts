@@ -152,6 +152,8 @@ export function createRoom(payload: {
   currency: string;
   expected_total?: number;
   discount_mode?: DiscountMode;
+  organizer_name?: string;
+  organizer_pin?: string;
 }): Promise<CreateRoomResponse> {
   return request<CreateRoomResponse>("/rooms", {
     method: "POST",
@@ -414,4 +416,35 @@ export function rotateAdminToken(
       adminToken,
     },
   );
+}
+
+export type RestoredRoomEntry = {
+  room: Room;
+  admin_token: string;
+};
+
+export type RestoreRoomsResponse = {
+  rooms: RestoredRoomEntry[];
+};
+
+export function restoreOrganizerRooms(payload: {
+  organizer_name: string;
+  organizer_pin: string;
+}): Promise<RestoreRoomsResponse> {
+  return request<RestoreRoomsResponse>("/rooms/restore", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function claimRoomAdmin(
+  roomId: string,
+  payload:
+    | { organizer_name: string; organizer_pin: string }
+    | { admin_token: string },
+): Promise<CreateRoomResponse> {
+  return request<CreateRoomResponse>(`/rooms/${id(roomId)}/claim-admin`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

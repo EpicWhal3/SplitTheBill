@@ -30,6 +30,10 @@ type Room struct {
 	Status             RoomStatus   `json:"status"`
 	FinalizedAt        *time.Time   `json:"finalized_at"`
 	AdminToken         string       `json:"-"`
+	OrganizerName      string       `json:"organizer_name,omitempty"`
+	OrganizerPinHash   string       `json:"-"`
+	CreatedAt          time.Time    `json:"created_at,omitempty"`
+	UpdatedAt          time.Time    `json:"updated_at,omitempty"`
 }
 
 type Participant struct {

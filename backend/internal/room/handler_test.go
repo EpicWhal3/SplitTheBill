@@ -212,8 +212,6 @@ func TestCollaborativeRoomLifecycle(t *testing.T) {
 		t.Fatal("organizer must receive a personal invite token")
 	}
 
-	// Free-form name joins are not allowed: the participant must present the
-	// personal invite token that the organizer received.
 	doJSON[map[string]string](
 		t,
 		handler,
@@ -1837,4 +1835,162 @@ func doJSON[T any](
 		t.Fatalf("decode response: %v; body=%s", err, res.Body.String())
 	}
 	return result
+}
+
+type restoreRoomsResponse struct {
+	Rooms []restoredRoomEntry `json:"rooms"`
+}
+
+func TestCreateRoomWithOrganizerCredentials(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms",
+		map[string]any{
+			"title":          "Dinner",
+			"currency":       "EUR",
+			"organizer_name": "Anna",
+			"organizer_pin":  "1234",
+		},
+		nil,
+		http.StatusCreated,
+	)
+
+	if created.Room.OrganizerName != "Anna" {
+		t.Fatalf("expected organizer_name Anna, got %q", created.Room.OrganizerName)
+	}
+}
+
+func TestCreateRoomRejectsPinWithoutName(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	doJSON[map[string]string](
+		t,
+		handler,
+		http.MethodPost,
+		"/rooms",
+		map[string]any{
+			"title":         "Dinner",
+			"currency":      "EUR",
+			"organizer_pin": "1234",
+		},
+		nil,
+		http.StatusBadRequest,
+	)
+}
+
+func TestRestoreOrganizerRooms(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "A", "currency": "EUR", "organizer_name": "Anna", "organizer_pin": "1234"},
+		nil, http.StatusCreated,
+	)
+	doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "B", "currency": "EUR", "organizer_name": "anna", "organizer_pin": "1234"},
+		nil, http.StatusCreated,
+	)
+
+	restored := doJSON[restoreRoomsResponse](
+		t, handler, http.MethodPost, "/rooms/restore",
+		map[string]any{"organizer_name": "Anna", "organizer_pin": "1234"},
+		nil, http.StatusOK,
+	)
+
+	if len(restored.Rooms) != 2 {
+		t.Fatalf("expected 2 rooms, got %d", len(restored.Rooms))
+	}
+	for _, entry := range restored.Rooms {
+		if entry.AdminToken == "" {
+			t.Fatal("expected admin token in restored entry")
+		}
+	}
+}
+
+func TestRestoreOrganizerRoomsWrongPin(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "A", "currency": "EUR", "organizer_name": "Anna", "organizer_pin": "1234"},
+		nil, http.StatusCreated,
+	)
+
+	restored := doJSON[restoreRoomsResponse](
+		t, handler, http.MethodPost, "/rooms/restore",
+		map[string]any{"organizer_name": "Anna", "organizer_pin": "9999"},
+		nil, http.StatusOK,
+	)
+
+	if len(restored.Rooms) != 0 {
+		t.Fatalf("expected 0 rooms for wrong pin, got %d", len(restored.Rooms))
+	}
+}
+
+func TestClaimRoomAdminWithCredentials(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR", "organizer_name": "Anna", "organizer_pin": "1234"},
+		nil, http.StatusCreated,
+	)
+
+	claimed := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms/"+created.Room.ID+"/claim-admin",
+		map[string]any{"organizer_name": "Anna", "organizer_pin": "1234"},
+		nil, http.StatusOK,
+	)
+
+	if claimed.AdminToken != created.AdminToken {
+		t.Fatalf("expected admin token %q, got %q", created.AdminToken, claimed.AdminToken)
+	}
+}
+
+func TestClaimRoomAdminWrongPin(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR", "organizer_name": "Anna", "organizer_pin": "1234"},
+		nil, http.StatusCreated,
+	)
+
+	doJSON[map[string]string](
+		t, handler, http.MethodPost, "/rooms/"+created.Room.ID+"/claim-admin",
+		map[string]any{"organizer_name": "Anna", "organizer_pin": "9999"},
+		nil, http.StatusUnauthorized,
+	)
+}
+
+func TestClaimRoomAdminWithToken(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR"},
+		nil, http.StatusCreated,
+	)
+
+	claimed := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms/"+created.Room.ID+"/claim-admin",
+		map[string]any{"admin_token": created.AdminToken},
+		nil, http.StatusOK,
+	)
+
+	if claimed.AdminToken != created.AdminToken {
+		t.Fatalf("expected admin token %q, got %q", created.AdminToken, claimed.AdminToken)
+	}
 }
