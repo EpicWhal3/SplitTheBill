@@ -1,14 +1,14 @@
 package room
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-
 	"io"
 	"net/http"
 	"strings"
-
 	"time"
 	"unicode/utf8"
 
@@ -18,10 +18,13 @@ import (
 )
 
 const (
-	maxTitleLength       = 120
-	maxParticipantLength = 80
-	maxItemNameLength    = 160
-	maxAssignmentWeight  = 1000
+	maxTitleLength         = 120
+	maxParticipantLength   = 80
+	maxItemNameLength      = 160
+	maxAssignmentWeight    = 1000
+	maxOrganizerNameLength = 80
+	minOrganizerPinLength  = 4
+	maxOrganizerPinLength  = 64
 )
 
 type Handler struct {
@@ -126,6 +129,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "reopen":
 			if r.Method == http.MethodPost {
 				h.reopen(w, r, roomID)
+				return
+			}
+		case "claim-admin":
+			if r.Method == http.MethodPost {
+				h.claimRoomAdmin(w, r, roomID)
 				return
 			}
 		default:
@@ -265,15 +273,30 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	organizerName := strings.TrimSpace(req.OrganizerName)
+	organizerPin := strings.TrimSpace(req.OrganizerPin)
+
+	if err := validateOrganizerCredentials(organizerName, organizerPin); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	organizerPinHash := ""
+	if organizerName != "" {
+		organizerPinHash = hashOrganizerPin(organizerName, organizerPin)
+	}
+
 	created, err := h.store.CreateRoom(domain.Room{
-		Title:         req.Title,
-		Currency:      req.Currency,
-		ServiceFee:    req.ServiceFee,
-		TipAmount:     req.TipAmount,
-		Discount:      req.Discount,
-		DiscountMode:  discountMode,
-		ExpectedTotal: req.ExpectedTotal,
-		Status:        domain.RoomStatusDraft,
+		Title:            req.Title,
+		Currency:         req.Currency,
+		ServiceFee:       req.ServiceFee,
+		TipAmount:        req.TipAmount,
+		Discount:         req.Discount,
+		DiscountMode:     discountMode,
+		ExpectedTotal:    req.ExpectedTotal,
+		Status:           domain.RoomStatusDraft,
+		OrganizerName:    organizerName,
+		OrganizerPinHash: organizerPinHash,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create room")
@@ -284,6 +307,126 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		"room":        created,
 		"admin_token": created.AdminToken,
 	})
+}
+
+type restoredRoomEntry struct {
+	Room       domain.Room `json:"room"`
+	AdminToken string      `json:"admin_token"`
+}
+
+type restoreRoomsRequest struct {
+	OrganizerName string `json:"organizer_name"`
+	OrganizerPin  string `json:"organizer_pin"`
+}
+
+type claimAdminRequest struct {
+	OrganizerName string `json:"organizer_name"`
+	OrganizerPin  string `json:"organizer_pin"`
+	AdminToken    string `json:"admin_token"`
+}
+
+func (h *Handler) restoreOrganizerRooms(w http.ResponseWriter, r *http.Request) {
+	var req restoreRoomsRequest
+	if err := readJSON(r, &req); err != nil {
+		writeReadJSONError(w, err)
+		return
+	}
+
+	organizerName := strings.TrimSpace(req.OrganizerName)
+	organizerPin := strings.TrimSpace(req.OrganizerPin)
+	if organizerName == "" || organizerPin == "" {
+		writeError(w, http.StatusBadRequest, "organizer name and pin are required")
+		return
+	}
+
+	rooms, err := h.store.ListRoomsByOrganizer(organizerName, hashOrganizerPin(organizerName, organizerPin))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore rooms")
+		return
+	}
+
+	entries := make([]restoredRoomEntry, 0, len(rooms))
+	for _, room := range rooms {
+		entries = append(entries, restoredRoomEntry{Room: room, AdminToken: room.AdminToken})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"rooms": entries})
+}
+
+func (h *Handler) claimRoomAdmin(w http.ResponseWriter, r *http.Request, roomID string) {
+	room, err := h.store.GetRoom(roomID)
+	if err != nil {
+		writeStoreError(w, err, "room not found")
+		return
+	}
+
+	var req claimAdminRequest
+	if err := readJSON(r, &req); err != nil {
+		writeReadJSONError(w, err)
+		return
+	}
+
+	providedToken := strings.TrimSpace(req.AdminToken)
+	organizerName := strings.TrimSpace(req.OrganizerName)
+	organizerPin := strings.TrimSpace(req.OrganizerPin)
+
+	authorized := false
+
+	switch {
+	case providedToken != "":
+		authorized = tokensEqual(providedToken, room.AdminToken)
+	case organizerName != "" && organizerPin != "" && room.OrganizerName != "":
+		authorized = strings.EqualFold(organizerName, room.OrganizerName) &&
+			organizerPinMatches(organizerName, organizerPin, room.OrganizerPinHash)
+	}
+
+	if !authorized {
+		writeError(w, http.StatusUnauthorized, "invalid organizer credentials")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room":        room,
+		"admin_token": room.AdminToken,
+	})
+}
+
+func hashOrganizerPin(name, pin string) string {
+	material := strings.ToLower(strings.TrimSpace(name)) + ":" + strings.TrimSpace(pin)
+	sum := sha256.Sum256([]byte(material))
+	return hex.EncodeToString(sum[:])
+}
+
+func organizerPinMatches(name, pin, storedHash string) bool {
+	if storedHash == "" {
+		return false
+	}
+
+	expected := []byte(storedHash)
+	actual := []byte(hashOrganizerPin(name, pin))
+	if len(expected) != len(actual) {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare(expected, actual) == 1
+}
+
+func validateOrganizerCredentials(name, pin string) error {
+	if name == "" && pin == "" {
+		return nil
+	}
+	if name == "" {
+		return errors.New("organizer pin requires organizer name")
+	}
+	if utf8.RuneCountInString(name) > maxOrganizerNameLength {
+		return errors.New("organizer name is too long")
+	}
+	if pin == "" ||
+		utf8.RuneCountInString(pin) < minOrganizerPinLength ||
+		utf8.RuneCountInString(pin) > maxOrganizerPinLength {
+		return errors.New("organizer pin must be between 4 and 64 characters")
+	}
+	return nil
 }
 
 type updateRoomRequest struct {
