@@ -27,7 +27,6 @@ import {
   joinRoom,
   openRoomSelections,
   type Participant,
-  participantInviteLink,
   type ReceiptItem,
   reopenRoom,
   type Room,
@@ -44,11 +43,14 @@ import { calculateParticipantPreview } from "@/lib/local-calculation";
 import { formatMoney, tryParseMoneyToMinorUnits } from "@/lib/money";
 import {
   clearAdminToken,
+  clearParticipantPins,
   clearParticipantSession,
   loadAdminToken,
+  loadParticipantPins,
   loadParticipantSession,
   type ParticipantSession,
   saveAdminToken,
+  saveParticipantPins,
   saveParticipantSession,
 } from "@/lib/session";
 
@@ -77,6 +79,7 @@ export default function RoomPage({ params }: Props) {
     useState<ParticipantSession | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
+  const [joinPin, setJoinPin] = useState("");
   const [participantInvites, setParticipantInvites] = useState<
     Record<string, string>
   >({});
@@ -160,7 +163,7 @@ export default function RoomPage({ params }: Props) {
   );
 
   const joinWithInviteToken = useCallback(
-    async (id: string, token: string) => {
+    async (id: string, token: string): Promise<boolean> => {
       setLoading(true);
       setError("");
 
@@ -173,7 +176,6 @@ export default function RoomPage({ params }: Props) {
         };
 
         saveParticipantSession(id, session);
-        setParticipantSession(session);
         setParticipants((prev) =>
           prev.some((p) => p.id === result.participant.id)
             ? prev.map((p) =>
@@ -181,13 +183,14 @@ export default function RoomPage({ params }: Props) {
               )
             : [...prev, result.participant],
         );
+        setParticipantSession(session);
         await loadRoomData(id, false);
+        return true;
       } catch (err) {
         setError(
-          err instanceof Error
-            ? err.message
-            : "Не удалось войти по персональной ссылке",
+          err instanceof Error ? err.message : "Не удалось войти по PIN-коду",
         );
+        return false;
       } finally {
         setLoading(false);
       }
@@ -200,12 +203,14 @@ export default function RoomPage({ params }: Props) {
       const resolvedRoomId = resolved.roomId;
       const storedAdminToken = loadAdminToken(resolvedRoomId);
       const storedSession = loadParticipantSession(resolvedRoomId);
+      const storedPins = loadParticipantPins(resolvedRoomId);
       const inviteToken =
         new URLSearchParams(window.location.search).get("token")?.trim() ?? "";
 
       setRoomId(resolvedRoomId);
       setAdminToken(storedAdminToken);
       setParticipantSession(storedSession);
+      setParticipantInvites(storedPins);
       setShareUrl(`${window.location.origin}/rooms/${resolvedRoomId}`);
       setAuthReady(true);
 
@@ -311,7 +316,7 @@ export default function RoomPage({ params }: Props) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setParticipantSession(null);
     setError(
-      "Участник был удалён из комнаты. Попросите организатора прислать новую персональную ссылку.",
+      "Участник был удалён из комнаты. Попросите организатора выдать новый PIN-код.",
     );
   }, [participantSession, participants, room]);
 
@@ -385,6 +390,20 @@ export default function RoomPage({ params }: Props) {
     }
 
     return parsed;
+  }
+
+  async function handleJoinByPin(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const pin = joinPin.trim();
+    if (!roomId || !pin) {
+      return;
+    }
+
+    const ok = await joinWithInviteToken(roomId, pin);
+    if (ok) {
+      setJoinPin("");
+    }
   }
 
   async function saveParticipantWeight(item: ReceiptItem, weightValue: string) {
@@ -509,17 +528,15 @@ export default function RoomPage({ params }: Props) {
   }
 
   async function handleCopyInvite(participant: Participant) {
-    const inviteToken = participantInvites[participant.id];
+    const pin = participantInvites[participant.id];
 
-    if (!roomId || !inviteToken) {
+    if (!roomId || !pin) {
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(
-        participantInviteLink(roomId, inviteToken),
-      );
-      setCopyState(`Ссылка для «${participant.name}» скопирована`);
+      await navigator.clipboard.writeText(pin);
+      setCopyState(`PIN-код для «${participant.name}» (${pin}) скопирован`);
     } catch {
       setCopyState("Не удалось скопировать автоматически");
     }
@@ -532,7 +549,7 @@ export default function RoomPage({ params }: Props) {
       !roomId ||
       !adminToken ||
       !window.confirm(
-        `Создать новую персональную ссылку для «${participant.name}»? Старая ссылка перестанет работать.`,
+        `Сгенерировать новый PIN-код для «${participant.name}»? Старый код перестанет работать.`,
       )
     ) {
       return;
@@ -548,18 +565,22 @@ export default function RoomPage({ params }: Props) {
         adminToken,
       );
 
-      setParticipantInvites((prev) => ({
-        ...prev,
-        [result.participant.id]: result.participant_token,
-      }));
-      setCopyState(`Новая ссылка для «${result.participant.name}» готова`);
+      setParticipantInvites((prev) => {
+        const next = {
+          ...prev,
+          [result.participant.id]: result.participant_token,
+        };
+        saveParticipantPins(roomId, next);
+        return next;
+      });
+      setCopyState(
+        `Новый PIN-код для «${result.participant.name}»: ${result.participant_token}`,
+      );
       await loadRoomData(roomId, false);
-      window.setTimeout(() => setCopyState(""), 2500);
+      window.setTimeout(() => setCopyState(""), 3500);
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Не удалось создать персональную ссылку",
+        err instanceof Error ? err.message : "Не удалось создать новый PIN-код",
       );
     } finally {
       setLoading(false);
@@ -631,13 +652,17 @@ export default function RoomPage({ params }: Props) {
             )
           : [...prev, result.participant],
       );
-      setParticipantInvites((prev) => ({
-        ...prev,
-        [result.participant.id]: result.participant_token,
-      }));
+      setParticipantInvites((prev) => {
+        const next = {
+          ...prev,
+          [result.participant.id]: result.participant_token,
+        };
+        saveParticipantPins(roomId, next);
+        return next;
+      });
       setParticipantName("");
       setCopyState(
-        `Участник «${result.participant.name}» добавлен — скопируйте персональную ссылку в таблице.`,
+        `Участник «${result.participant.name}» добавлен. PIN-код: ${result.participant_token}`,
       );
       await loadRoomData(roomId, true);
       setCalculation(null);
@@ -672,9 +697,17 @@ export default function RoomPage({ params }: Props) {
       return;
     }
 
-    await runAdminMutation(() =>
+    const success = await runAdminMutation(() =>
       deleteParticipant(roomId, participant.id, adminToken),
     );
+    if (success) {
+      setParticipantInvites((prev) => {
+        const next = { ...prev };
+        delete next[participant.id];
+        saveParticipantPins(roomId, next);
+        return next;
+      });
+    }
   }
 
   async function handleAddItem(event: SubmitEvent<HTMLFormElement>) {
@@ -909,6 +942,7 @@ export default function RoomPage({ params }: Props) {
     try {
       await deleteRoom(roomId, adminToken);
       clearAdminToken(roomId);
+      clearParticipantPins(roomId);
       clearParticipantSession(roomId);
       router.push("/");
     } catch (err) {
@@ -1129,9 +1163,12 @@ export default function RoomPage({ params }: Props) {
           participantPreview={participantPreview}
           participantWeights={participantWeights}
           calculation={calculation}
+          joinPin={joinPin}
           loading={loading}
           selectionLoadingId={selectionLoadingId}
           payerName={payer?.name ?? ""}
+          onSetJoinPin={setJoinPin}
+          onJoinByPin={handleJoinByPin}
           onCopyParticipantSummary={() => void handleCopyParticipantSummary()}
           onToggleSelection={(item) => void handleToggleSelection(item)}
           onWeightChange={(itemId, value) =>
@@ -1234,9 +1271,8 @@ function AdminView(props: AdminViewProps) {
             </button>
           </div>
           <p className="muted">
-            Эта ссылка открывает комнату только для просмотра. Чтобы участник
-            мог выбирать позиции, отправьте ему персональную ссылку из таблицы
-            ниже.
+            Отправьте эту общую ссылку в чат или покажите QR-код друзьям. Для
+            входа каждый участник введёт свой личный PIN-код из таблицы ниже.
           </p>
         </div>
         {props.qrCodeUrl && (
@@ -1350,8 +1386,8 @@ function AdminView(props: AdminViewProps) {
             <thead>
               <tr>
                 <th>Имя</th>
-                <th>Вошёл по ссылке</th>
-                <th>Персональная ссылка</th>
+                <th>Вошёл по коду</th>
+                <th>PIN-код для входа</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -1363,15 +1399,20 @@ function AdminView(props: AdminViewProps) {
                   <td>
                     <div className="actions">
                       {props.participantInvites[participant.id] ? (
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => props.onCopyInvite(participant)}
-                        >
-                          Скопировать
-                        </button>
+                        <>
+                          <code>
+                            {props.participantInvites[participant.id]}
+                          </code>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => props.onCopyInvite(participant)}
+                          >
+                            Копировать PIN
+                          </button>
+                        </>
                       ) : (
-                        <span className="muted">Ещё не создана</span>
+                        <span className="muted">Скрыт</span>
                       )}
                       <button
                         type="button"
@@ -1380,8 +1421,8 @@ function AdminView(props: AdminViewProps) {
                         onClick={() => props.onRegenerateInvite(participant)}
                       >
                         {props.participantInvites[participant.id]
-                          ? "Новая ссылка"
-                          : "Создать ссылку"}
+                          ? "Новый PIN"
+                          : "Показать новый PIN"}
                       </button>
                     </div>
                   </td>
@@ -1684,9 +1725,12 @@ type ParticipantViewProps = {
   participantPreview: ReturnType<typeof calculateParticipantPreview> | null;
   participantWeights: WeightDrafts;
   calculation: CalculateResponse | null;
+  joinPin: string;
   loading: boolean;
   selectionLoadingId: string;
   payerName: string;
+  onSetJoinPin: (value: string) => void;
+  onJoinByPin: (event: SubmitEvent<HTMLFormElement>) => void;
   onCopyParticipantSummary: () => void;
   onToggleSelection: (item: ReceiptItem) => void;
   onWeightChange: (itemId: string, value: string) => void;
@@ -1699,20 +1743,28 @@ function ParticipantView(props: ParticipantViewProps) {
     return (
       <section className="card join-card">
         <p className="eyebrow">Вход в комнату</p>
-        <h2>Нужна персональная ссылка</h2>
+        <h2>Введите ваш PIN-код</h2>
         {props.room.status === "finalized" ? (
           <p>Распределение уже завершено. Войти новым участником нельзя.</p>
         ) : (
-          <>
-            <p>
-              Организатор добавляет участников и отправляет каждому личную
-              ссылку. Откройте её на своём устройстве — браузер запомнит, кто вы,
-              и больше не спросит имя.
-            </p>
+          <form onSubmit={props.onJoinByPin} className="grid">
             <p className="muted">
-              Если ссылка не открывается, попросите организатора выпустить новую.
+              Спросите свой персональный 6-значный PIN-код у организатора чека.
             </p>
-          </>
+            <label>
+              PIN-код участника
+              <input
+                value={props.joinPin}
+                onChange={(event) => props.onSetJoinPin(event.target.value)}
+                placeholder="Например: 482910"
+                inputMode="numeric"
+                maxLength={64}
+              />
+            </label>
+            <button disabled={props.loading || !props.joinPin.trim()}>
+              {props.loading ? "Входим..." : "Войти"}
+            </button>
+          </form>
         )}
       </section>
     );

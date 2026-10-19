@@ -220,7 +220,7 @@ func (s *PostgresStore) AddParticipant(
 	participant.RoomID = roomID
 	participant.Claimed = false
 	if participant.AccessToken == "" {
-		participant.AccessToken = newToken()
+		participant.AccessToken = newParticipantPIN()
 	}
 
 	query := `
@@ -327,7 +327,7 @@ func (s *PostgresStore) RotateParticipantToken(
 		`,
 		roomID,
 		participantID,
-		newToken(),
+		newParticipantPIN(),
 	).Scan(
 		&participant.ID,
 		&participant.RoomID,

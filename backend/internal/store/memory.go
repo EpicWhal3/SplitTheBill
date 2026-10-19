@@ -96,7 +96,7 @@ func (s *MemoryStore) AddParticipant(
 	participant.RoomID = roomID
 	participant.Claimed = false
 	if participant.AccessToken == "" {
-		participant.AccessToken = newToken()
+		participant.AccessToken = s.newUniquePIN(roomID)
 	}
 
 	s.participants[roomID] = append(
@@ -157,7 +157,7 @@ func (s *MemoryStore) RotateParticipantToken(
 			continue
 		}
 
-		participant.AccessToken = newToken()
+		participant.AccessToken = s.newUniquePIN(roomID)
 		participants[i] = participant
 		s.participants[roomID] = participants
 
@@ -591,4 +591,20 @@ func (s *MemoryStore) participantExists(
 	}
 
 	return false
+}
+
+func (s *MemoryStore) newUniquePIN(roomID string) string {
+	for {
+		pin := newParticipantPIN()
+		taken := false
+		for _, p := range s.participants[roomID] {
+			if p.AccessToken == pin {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return pin
+		}
+	}
 }

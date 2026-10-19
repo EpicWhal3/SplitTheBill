@@ -12,6 +12,10 @@ function participantKey(roomId: string): string {
   return `split-participant:${roomId}`;
 }
 
+function adminPinsKey(roomId: string): string {
+  return `split-admin-pins:${roomId}`;
+}
+
 export function saveAdminToken(roomId: string, token: string): void {
   window.localStorage.setItem(adminKey(roomId), token);
 }
@@ -22,6 +26,40 @@ export function loadAdminToken(roomId: string): string {
 
 export function clearAdminToken(roomId: string): void {
   window.localStorage.removeItem(adminKey(roomId));
+}
+
+export function loadParticipantPins(roomId: string): Record<string, string> {
+  const raw = window.localStorage.getItem(adminPinsKey(roomId));
+
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const result: Record<string, string> = {};
+
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value) {
+        result[key] = value;
+      }
+    }
+
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function saveParticipantPins(
+  roomId: string,
+  pins: Record<string, string>,
+): void {
+  window.localStorage.setItem(adminPinsKey(roomId), JSON.stringify(pins));
+}
+
+export function clearParticipantPins(roomId: string): void {
+  window.localStorage.removeItem(adminPinsKey(roomId));
 }
 
 export function saveParticipantSession(
