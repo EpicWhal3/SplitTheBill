@@ -60,6 +60,8 @@ const translations: Record<string, string> = {
   "no participants": "В комнате пока нет участников.",
   "no receipt items": "В чеке пока нет позиций.",
   "subtotal must be positive": "Сумма позиций должна быть больше нуля.",
+  "item total must be non-negative":
+    "Стоимость позиции не может быть отрицательной.",
   "discount exceeds bill total": "Скидка больше суммы чека. Уменьшите скидку.",
   "payer is required": "Выберите плательщика.",
   "payer is not a participant": "Плательщик не является участником комнаты.",

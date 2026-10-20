@@ -1994,3 +1994,164 @@ func TestClaimRoomAdminWithToken(t *testing.T) {
 		t.Fatalf("expected admin token %q, got %q", created.AdminToken, claimed.AdminToken)
 	}
 }
+
+func TestAddItemAllowsZeroUnitPrice(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR"},
+		nil, http.StatusCreated,
+	)
+
+	item := doJSON[domain.ReceiptItem](
+		t, handler, http.MethodPost, "/rooms/"+created.Room.ID+"/items",
+		map[string]any{"name": "Tap water", "quantity": 2, "unit_price": 0},
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusCreated,
+	)
+
+	if item.UnitPrice != 0 || item.Total != 0 {
+		t.Fatalf("free item must have zero price and total: %#v", item)
+	}
+	if item.Quantity != 2 {
+		t.Fatalf("expected quantity 2, got %d", item.Quantity)
+	}
+}
+
+func TestAddItemRejectsNegativeUnitPrice(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR"},
+		nil, http.StatusCreated,
+	)
+
+	payload := doJSON[map[string]string](
+		t, handler, http.MethodPost, "/rooms/"+created.Room.ID+"/items",
+		map[string]any{"name": "Refund", "quantity": 1, "unit_price": -100},
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusBadRequest,
+	)
+
+	if !strings.Contains(payload["error"], "unit_price must be non-negative") {
+		t.Fatalf("unexpected error: %#v", payload)
+	}
+}
+
+func TestUpdateItemAllowsZeroUnitPrice(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	created := doJSON[createRoomResponse](
+		t, handler, http.MethodPost, "/rooms",
+		map[string]any{"title": "Dinner", "currency": "EUR"},
+		nil, http.StatusCreated,
+	)
+
+	item := doJSON[domain.ReceiptItem](
+		t, handler, http.MethodPost, "/rooms/"+created.Room.ID+"/items",
+		map[string]any{"name": "Bread", "quantity": 1, "unit_price": 500},
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusCreated,
+	)
+
+	updated := doJSON[domain.ReceiptItem](
+		t, handler, http.MethodPatch, "/rooms/"+created.Room.ID+"/items/"+item.ID,
+		map[string]any{"unit_price": 0},
+		map[string]string{"X-Admin-Token": created.AdminToken},
+		http.StatusOK,
+	)
+
+	if updated.UnitPrice != 0 || updated.Total != 0 {
+		t.Fatalf("update to free item failed: %#v", updated)
+	}
+}
+
+func TestFinalizeAllowsFreeItemAmongPaidItems(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, _ := memoryStore.CreateRoom(domain.Room{
+		Title: "Dinner", Currency: "EUR", ExpectedTotal: 1000,
+		Status: domain.RoomStatusClaiming,
+	})
+	payer, _ := memoryStore.AddParticipant(room.ID, domain.Participant{Name: "Max"})
+	guest, _ := memoryStore.AddParticipant(room.ID, domain.Participant{Name: "Anna"})
+	paidItem, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
+		Name: "Pizza", Quantity: 1, UnitPrice: 1000, Total: 1000,
+	})
+	freeItem, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
+		Name: "Tap water", Quantity: 1, UnitPrice: 0, Total: 0,
+	})
+	_, _ = memoryStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID: paidItem.ID, ParticipantID: payer.ID, Weight: 1,
+	})
+	_, _ = memoryStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID: freeItem.ID, ParticipantID: guest.ID, Weight: 1,
+	})
+	room.PayerParticipantID = payer.ID
+	_, _ = memoryStore.UpdateRoom(room)
+
+	result := doJSON[calculationPayload](
+		t, handler, http.MethodPost, "/rooms/"+room.ID+"/finalize",
+		nil, map[string]string{"X-Admin-Token": room.AdminToken},
+		http.StatusOK,
+	)
+
+	if result.CalculatedTotal != 1000 || !result.MatchesExpectedTotal {
+		t.Fatalf("unexpected calculation: %#v", result)
+	}
+
+	totals := map[string]int64{}
+	for _, item := range result.Results {
+		totals[item.ParticipantID] = item.TotalAmount
+	}
+	if totals[payer.ID] != 1000 || totals[guest.ID] != 0 {
+		t.Fatalf("free item must not add money: %#v", totals)
+	}
+}
+
+func TestFinalizeWithOnlyFreeItems(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	handler := NewHandler(memoryStore)
+
+	room, _ := memoryStore.CreateRoom(domain.Room{
+		Title: "Water tasting", Currency: "EUR",
+		Status: domain.RoomStatusClaiming,
+	})
+	payer, _ := memoryStore.AddParticipant(room.ID, domain.Participant{Name: "Max"})
+	guest, _ := memoryStore.AddParticipant(room.ID, domain.Participant{Name: "Anna"})
+	freeItem, _ := memoryStore.AddItem(room.ID, domain.ReceiptItem{
+		Name: "Tap water", Quantity: 2, UnitPrice: 0, Total: 0,
+	})
+	_, _ = memoryStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID: freeItem.ID, ParticipantID: payer.ID, Weight: 1,
+	})
+	_, _ = memoryStore.AddAssignment(room.ID, domain.ItemAssignment{
+		ItemID: freeItem.ID, ParticipantID: guest.ID, Weight: 1,
+	})
+	room.PayerParticipantID = payer.ID
+	_, _ = memoryStore.UpdateRoom(room)
+
+	result := doJSON[calculationPayload](
+		t, handler, http.MethodPost, "/rooms/"+room.ID+"/finalize",
+		nil, map[string]string{"X-Admin-Token": room.AdminToken},
+		http.StatusOK,
+	)
+
+	if result.CalculatedTotal != 0 || !result.MatchesExpectedTotal {
+		t.Fatalf("unexpected calculation: %#v", result)
+	}
+	for _, item := range result.Results {
+		if item.TotalAmount != 0 {
+			t.Fatalf("free bill must produce zero totals: %#v", result.Results)
+		}
+	}
+	if len(result.Debts) != 0 {
+		t.Fatalf("free bill must not create debts: %#v", result.Debts)
+	}
+}

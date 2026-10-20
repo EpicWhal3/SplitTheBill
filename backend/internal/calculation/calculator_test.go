@@ -510,6 +510,138 @@ func TestCalculateServiceAndTipSplitProportionally(t *testing.T) {
 	}
 }
 
+func TestCalculateAllowsFreeItem(t *testing.T) {
+	results, err := Calculate(BillInput{
+		Participants: []domain.Participant{
+			{ID: "p1", Name: "A"},
+			{ID: "p2", Name: "B"},
+		},
+		Items: []domain.ReceiptItem{
+			{ID: "i1", Name: "Pizza", Total: 1000},
+			{ID: "i2", Name: "Tap water", Total: 0},
+		},
+		Assignments: []domain.ItemAssignment{
+			{ItemID: "i1", ParticipantID: "p1", Weight: 1},
+			{ItemID: "i2", ParticipantID: "p2", Weight: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sumResults(results) != 1000 {
+		t.Fatalf("expected total 1000, got %d", sumResults(results))
+	}
+
+	amounts := map[string]int64{}
+	for _, result := range results {
+		amounts[result.ParticipantID] = result.TotalAmount
+	}
+	if amounts["p1"] != 1000 || amounts["p2"] != 0 {
+		t.Fatalf("free item must not add money: %#v", amounts)
+	}
+}
+
+func TestCalculateAllFreeItemsProduceZeroTotals(t *testing.T) {
+	results, err := Calculate(BillInput{
+		Participants: []domain.Participant{
+			{ID: "p1", Name: "A"},
+			{ID: "p2", Name: "B"},
+		},
+		Items: []domain.ReceiptItem{
+			{ID: "i1", Name: "Water", Total: 0},
+		},
+		Assignments: []domain.ItemAssignment{
+			{ItemID: "i1", ParticipantID: "p1", Weight: 1},
+			{ItemID: "i1", ParticipantID: "p2", Weight: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sumResults(results) != 0 {
+		t.Fatalf("expected total 0, got %d", sumResults(results))
+	}
+	for _, result := range results {
+		if result.TotalAmount != 0 {
+			t.Fatalf("free bill must produce zero totals: %#v", result)
+		}
+	}
+}
+
+func TestCalculateFreeItemsSplitServiceFeeEqually(t *testing.T) {
+	results, err := Calculate(BillInput{
+		Participants: []domain.Participant{
+			{ID: "p1", Name: "A"},
+			{ID: "p2", Name: "B"},
+			{ID: "p3", Name: "C"},
+		},
+		Items: []domain.ReceiptItem{
+			{ID: "i1", Name: "Water", Total: 0},
+		},
+		Assignments: []domain.ItemAssignment{
+			{ItemID: "i1", ParticipantID: "p1", Weight: 1},
+			{ItemID: "i1", ParticipantID: "p2", Weight: 1},
+			{ItemID: "i1", ParticipantID: "p3", Weight: 1},
+		},
+		ServiceFee: 100,
+		TipAmount:  100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sumResults(results) != 200 {
+		t.Fatalf("service fee and tip must not be lost, got %d", sumResults(results))
+	}
+
+	expected := map[string]int64{"p1": 68, "p2": 66, "p3": 66}
+	for _, result := range results {
+		if result.TotalAmount != expected[result.ParticipantID] {
+			t.Fatalf("unexpected equal fallback split: %#v", results)
+		}
+		if result.TotalAmount < 0 {
+			t.Fatalf("participant total must not be negative: %#v", result)
+		}
+	}
+}
+
+func TestCalculateFreeItemsApplyProportionalDiscountWithoutGoingNegative(t *testing.T) {
+	results, err := Calculate(BillInput{
+		Participants: []domain.Participant{
+			{ID: "p1", Name: "A"},
+			{ID: "p2", Name: "B"},
+		},
+		Items: []domain.ReceiptItem{
+			{ID: "i1", Name: "Water", Total: 0},
+		},
+		Assignments: []domain.ItemAssignment{
+			{ItemID: "i1", ParticipantID: "p1", Weight: 1},
+			{ItemID: "i1", ParticipantID: "p2", Weight: 1},
+		},
+		ServiceFee: 300,
+		Discount:   100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sumResults(results) != 200 {
+		t.Fatalf("expected total 200, got %d", sumResults(results))
+	}
+	for _, result := range results {
+		if result.TotalAmount < 0 {
+			t.Fatalf("participant total must not be negative: %#v", result)
+		}
+	}
+}
+
+func TestCalculateRejectsNegativeItemTotal(t *testing.T) {
+	_, err := Calculate(BillInput{
+		Participants: []domain.Participant{{ID: "p1", Name: "A"}},
+		Items:        []domain.ReceiptItem{{ID: "i1", Name: "Refund", Total: -1}},
+		Assignments:  []domain.ItemAssignment{{ItemID: "i1", ParticipantID: "p1", Weight: 1}},
+	})
+	assertErrorContains(t, err, "item total must be non-negative")
+}
+
 func TestCalculatePreservesTotalWithAwkwardRemainders(t *testing.T) {
 	results, err := Calculate(BillInput{
 		Participants: []domain.Participant{

@@ -49,3 +49,13 @@ backend/*.test
 backend/coverage.out
 backend/coverage.html
 
+# Ansible
+infra/ansible/inventory.ini
+infra/ansible/group_vars/all.yml
+infra/ansible/*.vault
+infra/ansible/.ansible/
+
+# Kubernetes secrets
+infra/kubernetes/**/secret.yaml
+infra/kubernetes/**/secrets/
+

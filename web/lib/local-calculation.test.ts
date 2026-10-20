@@ -295,6 +295,97 @@ describe("calculateParticipantPreview", () => {
     expect(preview.totalAmount).toBe(0);
   });
 
+  it("keeps a free item from changing paid amounts", () => {
+    const room = makeRoom();
+    const participants = makeParticipants("p1", "p2");
+    const items = [makeItem("i1", 1000), makeItem("i2", 0)];
+    const assignments = [
+      makeAssignment("i1", "p1"),
+      makeAssignment("i2", "p2"),
+    ];
+
+    const paid = calculateParticipantPreview(
+      room,
+      participants,
+      items,
+      assignments,
+      "p1",
+    );
+    const free = calculateParticipantPreview(
+      room,
+      participants,
+      items,
+      assignments,
+      "p2",
+    );
+
+    expect(paid.baseAmount).toBe(1000);
+    expect(paid.totalAmount).toBe(1000);
+    expect(free.baseAmount).toBe(0);
+    expect(free.totalAmount).toBe(0);
+  });
+
+  it("splits service fee and tip equally when all items are free", () => {
+    const room = makeRoom({ service_fee: 100, tip_amount: 100 });
+    const participants = makeParticipants("p1", "p2", "p3");
+    const items = [makeItem("i1", 0)];
+    const assignments = [
+      makeAssignment("i1", "p1"),
+      makeAssignment("i1", "p2"),
+      makeAssignment("i1", "p3"),
+    ];
+
+    const totals = ["p1", "p2", "p3"].map(
+      (id) =>
+        calculateParticipantPreview(room, participants, items, assignments, id)
+          .totalAmount,
+    );
+
+    expect(totals).toEqual([68, 66, 66]);
+    expect(totals.reduce((sum, amount) => sum + amount, 0)).toBe(200);
+  });
+
+  it("applies a proportional discount to a free bill without negatives", () => {
+    const room = makeRoom({
+      service_fee: 300,
+      discount: 100,
+      discount_mode: "proportional",
+    });
+    const participants = makeParticipants("p1", "p2");
+    const items = [makeItem("i1", 0)];
+    const assignments = [
+      makeAssignment("i1", "p1"),
+      makeAssignment("i1", "p2"),
+    ];
+
+    const totals = ["p1", "p2"].map(
+      (id) =>
+        calculateParticipantPreview(room, participants, items, assignments, id)
+          .totalAmount,
+    );
+
+    expect(totals).toEqual([100, 100]);
+    expect(totals.every((amount) => amount >= 0)).toBe(true);
+  });
+
+  it("returns zero totals when the whole bill is free", () => {
+    const room = makeRoom();
+    const participants = makeParticipants("p1", "p2");
+    const items = [makeItem("i1", 0)];
+    const assignments = [
+      makeAssignment("i1", "p1"),
+      makeAssignment("i1", "p2"),
+    ];
+
+    const totals = ["p1", "p2"].map(
+      (id) =>
+        calculateParticipantPreview(room, participants, items, assignments, id)
+          .totalAmount,
+    );
+
+    expect(totals).toEqual([0, 0]);
+  });
+
   it("ignores items without assignments", () => {
     const room = makeRoom();
     const participants = makeParticipants("p1");

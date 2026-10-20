@@ -45,8 +45,8 @@ export function calculateParticipantPreview(
     }
   }
 
-  const serviceShares = splitProportionally(room.service_fee, base);
-  const tipShares = splitProportionally(room.tip_amount, base);
+  const serviceShares = splitProportionallyOrEqually(room.service_fee, base);
+  const tipShares = splitProportionallyOrEqually(room.tip_amount, base);
 
   const gross = new Map<string, number>();
   for (const [id, amount] of base) {
@@ -59,7 +59,7 @@ export function calculateParticipantPreview(
   const discountShares =
     room.discount_mode === "equal"
       ? splitEquallyWithCapacity(room.discount, gross)
-      : splitProportionally(room.discount, base);
+      : splitDiscountProportionally(room.discount, base, gross);
 
   const baseAmount = base.get(participantId) ?? 0;
   const serviceShare = serviceShares.get(participantId) ?? 0;
@@ -151,6 +151,68 @@ function splitProportionally(
   }
 
   distributeRemainder(total - distributed, remainders, result);
+
+  return result;
+}
+
+function splitProportionallyOrEqually(
+  total: number,
+  base: Map<string, number>,
+): Map<string, number> {
+  if (total === 0) {
+    return zeroShares(base);
+  }
+
+  const baseTotal = Array.from(base.values()).reduce(
+    (sum, amount) => sum + amount,
+    0,
+  );
+
+  if (baseTotal > 0) {
+    return splitProportionally(total, base);
+  }
+
+  return splitEqually(total, base);
+}
+
+function splitDiscountProportionally(
+  total: number,
+  base: Map<string, number>,
+  gross: Map<string, number>,
+): Map<string, number> {
+  if (total === 0) {
+    return zeroShares(base);
+  }
+
+  const baseTotal = Array.from(base.values()).reduce(
+    (sum, amount) => sum + amount,
+    0,
+  );
+
+  if (baseTotal > 0) {
+    return splitProportionally(total, base);
+  }
+
+  return splitEquallyWithCapacity(total, gross);
+}
+
+function splitEqually(
+  total: number,
+  base: Map<string, number>,
+): Map<string, number> {
+  const result = zeroShares(base);
+
+  if (total === 0 || base.size === 0) {
+    return result;
+  }
+
+  const participants = Array.from(base.keys()).sort();
+  const share = Math.floor(total / participants.length);
+  const remainder = total % participants.length;
+
+  participants.forEach((participantId, index) => {
+    result.set(participantId, share + (index < remainder ? 1 : 0));
+  });
 
   return result;
 }

@@ -769,8 +769,8 @@ export default function RoomPage({ params }: Props) {
       setError("Количество должно быть положительным целым числом");
       return;
     }
-    if (unitPrice === null || unitPrice <= 0 || !itemName.trim()) {
-      setError("Название и положительная цена обязательны");
+    if (unitPrice === null || unitPrice < 0 || !itemName.trim()) {
+      setError("Название и неотрицательная цена обязательны");
       return;
     }
 
@@ -813,9 +813,9 @@ export default function RoomPage({ params }: Props) {
       !Number.isInteger(quantity) ||
       quantity <= 0 ||
       unitPrice === null ||
-      unitPrice <= 0
+      unitPrice < 0
     ) {
-      setError("Проверьте название, количество и цену");
+      setError("Проверьте название, количество и цену (цена не может быть отрицательной)");
       return;
     }
 
@@ -1559,7 +1559,6 @@ function AdminView(props: AdminViewProps) {
             value={props.itemPrice}
             onChange={props.onSetItemPrice}
             disabled={locked}
-            positive
           />
           <button disabled={props.loading || locked}>Добавить позицию</button>
         </form>
@@ -2389,20 +2388,18 @@ function MoneyInput({
   value,
   onChange,
   disabled,
-  positive = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   disabled: boolean;
-  positive?: boolean;
 }) {
   return (
     <label>
       {label}
       <input
         type="number"
-        min={positive ? "0.01" : "0"}
+        min="0"
         step="0.01"
         value={value}
         disabled={disabled}

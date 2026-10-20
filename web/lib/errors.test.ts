@@ -28,6 +28,8 @@ describe("translateError", () => {
       ["invalid participant invite token", "PIN-код"],
       ["request body too large", "Запрос слишком большой"],
       ["rate limit exceeded", "Слишком много запросов"],
+      ["unit_price must be non-negative", "неотрицательной"],
+      ["item total must be non-negative", "Стоимость позиции"],
     ];
 
     for (const [input, expectedPart] of cases) {

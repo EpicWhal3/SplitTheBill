@@ -56,8 +56,8 @@ func Calculate(input BillInput) ([]domain.ParticipantResult, error) {
 		if item.ID == "" {
 			return nil, errors.New("item id is required")
 		}
-		if item.Total <= 0 {
-			return nil, fmt.Errorf("item total must be positive: %s", item.Name)
+		if item.Total < 0 {
+			return nil, fmt.Errorf("item total must be non-negative: %s", item.Name)
 		}
 		if _, exists := itemsByID[item.ID]; exists {
 			return nil, fmt.Errorf("duplicate item: %s", item.ID)
@@ -111,17 +111,14 @@ func Calculate(input BillInput) ([]domain.ParticipantResult, error) {
 	for _, amount := range base {
 		subtotal += amount
 	}
-	if subtotal <= 0 {
-		return nil, errors.New("subtotal must be positive")
-	}
 
 	maximumDiscount := subtotal + input.ServiceFee + input.TipAmount
 	if input.Discount > maximumDiscount {
 		return nil, fmt.Errorf("discount exceeds bill total: maximum is %d", maximumDiscount)
 	}
 
-	serviceShares := splitProportionally(input.ServiceFee, base)
-	tipShares := splitProportionally(input.TipAmount, base)
+	serviceShares := splitProportionallyOrEqually(input.ServiceFee, base)
+	tipShares := splitProportionallyOrEqually(input.TipAmount, base)
 
 	gross := make(map[string]int64, len(base))
 	for participantID, amount := range base {
@@ -133,7 +130,7 @@ func Calculate(input BillInput) ([]domain.ParticipantResult, error) {
 	case domain.DiscountModeEqual:
 		discountShares = splitEquallyWithCapacity(input.Discount, gross)
 	default:
-		discountShares = splitProportionally(input.Discount, base)
+		discountShares = splitDiscountProportionally(input.Discount, base, gross)
 	}
 
 	results := make([]domain.ParticipantResult, 0, len(input.Participants))
@@ -255,6 +252,63 @@ func splitProportionally(total int64, base map[string]int64) map[string]int64 {
 	}
 
 	distributeRemainder(total-distributed, remainders, result)
+	return result
+}
+
+func splitProportionallyOrEqually(total int64, base map[string]int64) map[string]int64 {
+	if total == 0 {
+		return zeroShares(base)
+	}
+
+	var baseTotal int64
+	for _, amount := range base {
+		baseTotal += amount
+	}
+	if baseTotal > 0 {
+		return splitProportionally(total, base)
+	}
+
+	return splitEqually(total, base)
+}
+
+func splitDiscountProportionally(total int64, base, gross map[string]int64) map[string]int64 {
+	if total == 0 {
+		return zeroShares(base)
+	}
+
+	var baseTotal int64
+	for _, amount := range base {
+		baseTotal += amount
+	}
+	if baseTotal > 0 {
+		return splitProportionally(total, base)
+	}
+
+	return splitEquallyWithCapacity(total, gross)
+}
+
+func splitEqually(total int64, base map[string]int64) map[string]int64 {
+	result := zeroShares(base)
+	if total == 0 || len(base) == 0 {
+		return result
+	}
+
+	participants := make([]string, 0, len(base))
+	for participantID := range base {
+		participants = append(participants, participantID)
+	}
+	sort.Strings(participants)
+
+	share := total / int64(len(participants))
+	remainder := total % int64(len(participants))
+	for index, participantID := range participants {
+		amount := share
+		if int64(index) < remainder {
+			amount++
+		}
+		result[participantID] = amount
+	}
+
 	return result
 }
 

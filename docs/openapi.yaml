@@ -944,8 +944,8 @@ components:
         unit_price:
           type: integer
           format: int64
-          minimum: 1
-          description: Цена за единицу в минорных единицах.
+          minimum: 0
+          description: Цена за единицу в минорных единицах. `0` разрешён для бесплатных позиций.
     UpdateItemRequest:
       type: object
       description: Все поля необязательны; передаются только изменяемые.
@@ -958,7 +958,8 @@ components:
         unit_price:
           type: integer
           format: int64
-          minimum: 1
+          minimum: 0
+          description: `0` разрешён для бесплатных позиций.
     AssignmentRequest:
       type: object
       required: [ item_id, participant_id, weight ]
