@@ -1314,8 +1314,8 @@ func validateItem(name string, quantity int, unitPrice int64) error {
 	if quantity <= 0 {
 		return errors.New("quantity must be positive")
 	}
-	if unitPrice <= 0 {
-		return errors.New("unit_price must be positive")
+	if unitPrice < 0 {
+		return errors.New("unit_price must be non-negative")
 	}
 	return nil
 }

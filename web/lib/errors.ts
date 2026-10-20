@@ -53,7 +53,7 @@ const translations: Record<string, string> = {
   "participant name is too long": "Имя участника слишком длинное.",
   "item name is too long": "Название позиции слишком длинное.",
   "quantity must be positive": "Количество должно быть больше нуля.",
-  "unit_price must be positive": "Цена должна быть больше нуля.",
+  "unit_price must be non-negative": "Цена должна быть неотрицательной.",
   "payer must be a participant of this room":
     "Плательщиком может быть только участник этой комнаты.",
   "item_id and participant_id are required": "Выберите позицию и участника.",
