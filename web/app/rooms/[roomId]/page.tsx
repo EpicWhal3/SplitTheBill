@@ -2389,7 +2389,7 @@ function MoneyInput({
   value,
   onChange,
   disabled,
-  positive = true,
+  positive = false,
 }: {
   label: string;
   value: string;

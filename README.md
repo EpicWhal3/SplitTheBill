@@ -145,8 +145,7 @@ postgres://splitthebill:splitthebill@localhost:5432/splitthebill?sslmode=disable
 Вся схема данных описана в единственном файле
 [`backend/migrations/000001_init.up.sql`](backend/migrations/000001_init.up.sql),
 который создаёт таблицы `rooms`, `participants`, `receipt_items`,
-`item_assignments` и необходимые индексы. Отдельная команда не требуется —
-достаточно запустить сервер.
+`item_assignments` и необходимые индексы.
 
 ## Тесты и проверки
 
@@ -164,9 +163,6 @@ npm run lint
 npm run test
 npm run build
 ```
-
-Для `npm ci` в репозитории должен присутствовать
-[`web/package-lock.json`](web/package-lock.json) — он закоммичен.
 
 Те же проверки выполняются в CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)),
 включая валидацию `docker compose config` и сборку образов `docker compose build`.
