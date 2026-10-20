@@ -12,6 +12,8 @@
 * Жизненный цикл комнаты: `draft` → `claiming` → `finalized`.
 * Режимы организатора (админ-токен) и участника (токен участника).
 * Веса для позиций, которые делятся между несколькими участниками.
+* Бесплатные позиции (`unit_price = 0`) без искажения распределения сборов,
+  чаевых и скидки.
 * Итоговый список долгов «кто кому сколько должен».
 * SSE-обновления комнаты с резервным polling на клиенте.
 * Rate limiting, ограничение размера тела запроса и заголовки безопасности.
@@ -27,7 +29,8 @@ SplitTheBill/
 ├── web/                     # Next.js (App Router) + React + TypeScript
 │   ├── app/                 # страницы: лендинг и комната
 │   └── lib/                 # API-клиент, расчёты, работа с деньгами и сессией
-├── docs/                    # документация (deployment, API, current-state)
+├── docs/                    # документация (deployment, API, current-state, Kubernetes)
+├── infra/                   # Kubernetes-манифесты (Kustomize) и Ansible-плейбуки
 ├── docker-compose.yml       # весь стек: postgres + backend + web
 └── .github/workflows/       # CI
 ```
@@ -142,10 +145,17 @@ postgres://splitthebill:splitthebill@localhost:5432/splitthebill?sslmode=disable
 
 Миграции применяются автоматически при старте backend, если задан
 `DATABASE_URL` (см. [`backend/internal/migration/migration.go`](backend/internal/migration/migration.go)).
-Вся схема данных описана в единственном файле
-[`backend/migrations/000001_init.up.sql`](backend/migrations/000001_init.up.sql),
-который создаёт таблицы `rooms`, `participants`, `receipt_items`,
-`item_assignments` и необходимые индексы.
+Схема собирается из последовательных версий в
+[`backend/migrations/`](backend/migrations): базовая схема
+[`000001_init.up.sql`](backend/migrations/000001_init.up.sql) создаёт таблицы
+`rooms`, `participants`, `receipt_items`, `item_assignments` и индексы,
+[`000002_participant_claims.up.sql`](backend/migrations/000002_participant_claims.up.sql)
+добавляет флаг `claimed`,
+[`000003_organizer_credentials.up.sql`](backend/migrations/000003_organizer_credentials.up.sql)
+— имя и хэш пароля организатора,
+[`000004_allow_zero_unit_price.up.sql`](backend/migrations/000004_allow_zero_unit_price.up.sql)
+разрешает нулевые `unit_price` и `total`. Применённые миграции не
+редактируются: любое изменение схемы — новая версия.
 
 ## Тесты и проверки
 
@@ -222,8 +232,22 @@ npm run build
 * [`docs/openapi.yaml`](docs/openapi.yaml) — машиночитаемая OpenAPI-спецификация;
 * [`docs/api.md`](docs/api.md) — краткий справочник по эндпоинтам.
 
+## Kubernetes и Ansible
+
+Инфраструктура для Kubernetes и Ansible находится в [`infra/`](infra):
+
+* [`infra/kubernetes`](infra/kubernetes) — Kustomize base и overlays `dev`/`prod`
+  для PostgreSQL, backend, web и ingress;
+* [`infra/ansible`](infra/ansible) — плейбуки деплоя и dev-установки K3s.
+
+Подробная инструкция: [`docs/kubernetes-ansible.md`](docs/kubernetes-ansible.md).
+
+`docker-compose` остаётся основным способом локального запуска; Kubernetes и
+Ansible не меняют локальный стек и `render.yaml`.
+
 ## Документация
 
 * [`docs/deployment.md`](docs/deployment.md) — развёртывание и сборка Docker-образов;
+* [`docs/kubernetes-ansible.md`](docs/kubernetes-ansible.md) — Kubernetes, Kustomize и Ansible;
 * [`docs/api.md`](docs/api.md) и [`docs/openapi.yaml`](docs/openapi.yaml) — документация API;
 * [`docs/current-state.md`](docs/current-state.md) — текущее состояние проекта.

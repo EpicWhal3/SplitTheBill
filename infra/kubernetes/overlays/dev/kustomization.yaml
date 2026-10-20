@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: splitthebill
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/epicwhal3/splitthebill-backend
+    newName: ghcr.io/epicwhal3/splitthebill-backend
+    newTag: dev
+  - name: ghcr.io/epicwhal3/splitthebill-web
+    newName: ghcr.io/epicwhal3/splitthebill-web
+    newTag: dev
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: splitthebill-backend-config
+    patch: |-
+      - op: replace
+        path: /data/ALLOWED_ORIGINS
+        value: "https://localhost"
+  - target:
+      kind: Ingress
+      name: splitthebill-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: localhost
+  - target:
+      kind: Ingress
+      name: splitthebill-web
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: localhost

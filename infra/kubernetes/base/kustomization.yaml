@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: splitthebill
+
+resources:
+  - namespace.yaml
+  - postgres/service.yaml
+  - postgres/statefulset.yaml
+  - backend/configmap.yaml
+  - backend/deployment.yaml
+  - backend/service.yaml
+  - web/deployment.yaml
+  - web/service.yaml
+  - ingress.yaml
+
+# Real Secrets are intentionally not part of the kustomization.
+# Create them from the *.example.yaml files before applying the manifests:
+#   kubectl apply -f infra/kubernetes/base/postgres/secret.yaml
+#   kubectl apply -f infra/kubernetes/base/backend/secret.yaml

@@ -1,0 +1,17 @@
+app_namespace: splitthebill
+app_overlay: prod
+
+backend_image: ghcr.io/OWNER/splitthebill-backend:latest
+web_image: ghcr.io/OWNER/splitthebill-web:latest
+
+app_domain: app.example.com
+allowed_origins: "https://app.example.com"
+
+postgres_database: splitthebill
+postgres_user: splitthebill
+
+postgres_password: CHANGE_ME
+
+database_url: "postgres://{{ postgres_user }}:{{ postgres_password }}@postgres:5432/{{ postgres_database }}?sslmode=disable"
+
+kubeconfig_path: "~/.kube/config"

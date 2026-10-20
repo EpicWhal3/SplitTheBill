@@ -12,6 +12,9 @@
 * Участники: добавление, присоединение по ссылке, изменение, удаление,
   авторизация по токену участника.
 * Позиции чека: добавление, изменение, удаление.
+* Бесплатные позиции: `unit_price = 0` разрешён (и для добавления, и для
+  обновления), отрицательная цена отклоняется. Нулевые позиции не ломают
+  расчёт сборов, чаевых и скидки.
 * Назначения и выборы: `assignments`, `selections` с поддержкой весов.
 * Расчёт итогов: `POST /rooms/{roomId}/calculate`.
 * Жизненный цикл комнаты: `draft` → `claiming` → `finalized`
@@ -23,7 +26,8 @@
   Схема собрана из последовательных версий в [`backend/migrations`](../backend/migrations):
   [`000001_init.up.sql`](../backend/migrations/000001_init.up.sql) — базовая схема,
   [`000002_participant_claims.up.sql`](../backend/migrations/000002_participant_claims.up.sql) — флаг `claimed`,
-  [`000003_organizer_credentials.up.sql`](../backend/migrations/000003_organizer_credentials.up.sql) — имя и хэш пароля организатора.
+  [`000003_organizer_credentials.up.sql`](../backend/migrations/000003_organizer_credentials.up.sql) — имя и хэш пароля организатора,
+  [`000004_allow_zero_unit_price.up.sql`](../backend/migrations/000004_allow_zero_unit_price.up.sql) — `unit_price >= 0` и `total >= 0`.
   Применённые миграции не редактируются: любое изменение схемы — новая версия.
 * Привязка комнаты к организатору: `POST /rooms` принимает опциональные
   `organizer_name` и `organizer_pin` (пароль хэшируется SHA-256, никогда не
@@ -82,6 +86,17 @@
 * Корневой [`docker-compose.yml`](../docker-compose.yml) со всеми сервисами:
   `postgres`, `backend`, `web`.
 * [`docs/deployment.md`](deployment.md) — инструкции по сборке и развёртыванию.
+* Kubernetes-инфраструктура в [`infra/kubernetes`](../infra/kubernetes):
+  namespace, PostgreSQL `StatefulSet` с PVC, backend и web `Deployment`/`Service`,
+  ingress с маршрутами `/` и `/api`, примеры Secret, Kustomize base и overlays
+  `dev`/`prod`.
+* Ansible-плейбуки в [`infra/ansible`](../infra/ansible): `deploy.yml` создаёт
+  секреты, применяет overlay и ждёт rollout; `setup-k3s.yml` — dev-only
+  установка однонодового K3s.
+* Web health endpoint [`web/app/health/route.ts`](../web/app/health/route.ts)
+  для Kubernetes probes.
+* [`docs/kubernetes-ansible.md`](kubernetes-ansible.md) — документация по
+  Kubernetes, Kustomize и Ansible.
 * [`docs/openapi.yaml`](openapi.yaml) и [`docs/api.md`](api.md) — полная
   документация API.
 * Примеры переменных окружения: `backend/.env.example`, `web/.env.local.example`.
@@ -100,6 +115,16 @@
 
 ## Не готово
 
-* **Нет e2e-тестов.** Есть unit-тесты backend (расчёт, хранилище,
-  HTTP-хендлеры) и frontend (Vitest), но нет сквозных браузерных тестов
-  пользовательских сценариев.
+* **Kubernetes-инфраструктура не проверена на реальном кластере.** Манифесты
+  валидируются статически (`kubectl kustomize`, CI), но деплой в CI не
+  выполняется.
+* **PostgreSQL в Kubernetes не production-ready:** один StatefulSet, PVC
+  `ReadWriteOnce`, без репликации, резервных копий и managed-обслуживания.
+  Для production рекомендуется внешняя managed PostgreSQL.
+* **Нет TLS, cert-manager, NetworkPolicy, HPA и мониторинга** в манифестах;
+  предполагается установленный nginx ingress controller.
+* **Секреты создаются вручную или через Ansible Vault.** В репозитории только
+  `*.example.yaml`; реальные `secret.yaml` нужно создать перед деплоем.
+* **Образы не собираются и не публикуются автоматически.** В манифестах
+  используются placeholder-имена `ghcr.io/OWNER/...`; registry, теги и домен
+  нужно настроить самостоятельно.

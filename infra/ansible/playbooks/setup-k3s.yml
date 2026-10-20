@@ -1,0 +1,50 @@
+- name: Install a single-node K3s for development
+  hosts: k8s_control
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Warn that this playbook is for development only
+      ansible.builtin.debug:
+        msg: >-
+          Installing a single-node K3s cluster. This setup is intended for
+          development and testing only, not for production.
+
+    - name: Install K3s
+      ansible.builtin.command:
+        cmd: >-
+          curl -sfL https://get.k3s.io |
+          INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644" sh -
+        creates: /usr/local/bin/k3s
+
+    - name: Wait for the K3s kubeconfig
+      ansible.builtin.wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        timeout: 120
+
+    - name: Ensure the kube directory exists
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/.kube"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the kubeconfig for the current user
+      ansible.builtin.copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ ansible_env.HOME }}/.kube/config"
+        remote_src: true
+        mode: "0600"
+
+    - name: Point the kubeconfig at the node address
+      ansible.builtin.replace:
+        path: "{{ ansible_env.HOME }}/.kube/config"
+        regexp: "https://127\\.0\\.0\\.1:6443"
+        replace: "https://{{ ansible_default_ipv4.address | default('127.0.0.1') }}:6443"
+      when: ansible_default_ipv4.address is defined
+
+    - name: Verify the cluster is reachable
+      ansible.builtin.command:
+        cmd: kubectl get nodes
+      environment:
+        KUBECONFIG: "{{ ansible_env.HOME }}/.kube/config"
+      changed_when: false

@@ -1,0 +1,51 @@
+# The API is exposed under /api and the prefix is stripped before the request
+# reaches the backend. This matches NEXT_PUBLIC_API_URL=/api built into the web
+# image, so the frontend never needs an absolute API URL.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: splitthebill-api
+  labels:
+    app.kubernetes.io/part-of: splitthebill
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: "/api(/|$)(.*)"
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: splitthebill-web
+  labels:
+    app.kubernetes.io/part-of: splitthebill
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 3000

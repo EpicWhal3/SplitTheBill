@@ -1,0 +1,138 @@
+- name: Deploy SplitTheBill to Kubernetes
+  hosts: k8s_control
+  gather_facts: false
+
+  vars:
+    manifests_overlay: "{{ playbook_dir }}/../../kubernetes/overlays/{{ app_overlay | default('prod') }}"
+    backend_secret_name: splitthebill-backend
+    postgres_secret_name: splitthebill-postgres
+
+  tasks:
+    - name: Require a real PostgreSQL password
+      ansible.builtin.assert:
+        that:
+          - postgres_password is defined
+          - postgres_password | length > 0
+          - postgres_password != 'CHANGE_ME'
+        fail_msg: >-
+          Set postgres_password through Ansible Vault or --extra-vars.
+          The CHANGE_ME placeholder from group_vars/all.example.yml is not allowed.
+      no_log: true
+
+    - name: Verify that kubectl is installed
+      ansible.builtin.command:
+        cmd: kubectl version --client
+      changed_when: false
+
+    - name: Verify that the overlay directory exists
+      ansible.builtin.stat:
+        path: "{{ manifests_overlay }}"
+      register: overlay_stat
+
+    - name: Fail when the overlay is missing
+      ansible.builtin.assert:
+        that:
+          - overlay_stat.stat.isdir | default(false)
+        fail_msg: "Overlay not found: {{ manifests_overlay }}"
+
+    - name: Create the application namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ app_namespace }}"
+            labels:
+              app.kubernetes.io/part-of: splitthebill
+
+    - name: Create or update the PostgreSQL Secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ postgres_secret_name }}"
+            namespace: "{{ app_namespace }}"
+          type: Opaque
+          stringData:
+            POSTGRES_PASSWORD: "{{ postgres_password }}"
+      no_log: true
+
+    - name: Create or update the backend Secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ backend_secret_name }}"
+            namespace: "{{ app_namespace }}"
+          type: Opaque
+          stringData:
+            DATABASE_URL: "{{ database_url }}"
+      no_log: true
+
+    - name: Apply Kubernetes manifests
+      ansible.builtin.command:
+        cmd: kubectl apply -k "{{ manifests_overlay }}"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: apply_result
+      changed_when: "' unchanged' not in apply_result.stdout"
+
+    - name: Override the backend image
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n {{ app_namespace }} set image
+          deployment/backend backend={{ backend_image }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      when: backend_image is defined and backend_image | length > 0
+
+    - name: Override the web image
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n {{ app_namespace }} set image
+          deployment/web web={{ web_image }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      when: web_image is defined and web_image | length > 0
+
+    - name: Wait for PostgreSQL to become ready
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n {{ app_namespace }} rollout status
+          statefulset/postgres --timeout=300s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Wait for the backend rollout
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n {{ app_namespace }} rollout status
+          deployment/backend --timeout=300s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Wait for the web rollout
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n {{ app_namespace }} rollout status
+          deployment/web --timeout=300s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Show pods
+      ansible.builtin.command:
+        cmd: kubectl -n {{ app_namespace }} get pods
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
